@@ -70,11 +70,21 @@ def _evidence(extraction: dict[str, Any], document_text: str) -> dict[str, Any]:
     if event_type != "approval" or outcome.base != QUALIFIED_BASE or not outcome.qualifier:
         result["reason"] = "not_qualified_approval_evidence"
         return result
-    if outcome.qualifier == "subject_to" and not re.fullmatch(
-        r"approved\s+subject\s+to\s+(?:conditions|stipulations)", action, re.I
-    ):
-        result["reason"] = "subject_to_missing_governed_complement"
-        return result
+    if outcome.qualifier == "subject_to":
+        inline = re.fullmatch(
+            r"approved\s+subject\s+to\s+(?:conditions|stipulations)", action, re.I
+        )
+        bounded_tail = document_text[end:min(len(document_text), end + 600)]
+        following = re.match(
+            r"\s*the\s+following\s+stipulations\s*:\s*"
+            r"(?:\(?[a-z0-9]+\)?[.)])\s+\S",
+            bounded_tail, re.I,
+        )
+        if not inline and not (
+            re.fullmatch(r"approved\s+subject\s+to", action, re.I) and following
+        ):
+            result["reason"] = "subject_to_missing_governed_complement"
+            return result
     context_start, context_end = max(0, start - 120), min(len(document_text), end + 120)
     result.update({"valid": True, "outcome_base": outcome.base,
                    "outcome_qualifier": outcome.qualifier,

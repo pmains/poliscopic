@@ -64,6 +64,20 @@ def test_subject_to_requires_governed_nonempty_complement():
     assert record["evidence"][0]["reason"] == "subject_to_missing_governed_complement"
 
 
+def test_subject_to_accepts_immediate_enumerated_following_stipulations():
+    action = "Approved\n subject to"
+    text = action + "\n the following stipulations:\n1. Record the final plat."
+    record = classify_event(row(
+        legacy_outcome="approved_with_conditions", document_text=text,
+        extractions=[{"id": 1, "extractor": "pattern", "extractor_version": "v1",
+                      "action_verb": action, "text_offset_start": 0,
+                      "text_offset_end": len(action)}],
+    ))
+    assert record["disposition"] == "planned"
+    assert record["normalized_legacy_outcome"] == "approved_subject_to"
+    assert record["outcome_qualifier"] == "subject_to"
+
+
 @pytest.mark.parametrize("changes,reason", [
     ({"document_text": "Approved with Conditions"}, "no_exact_qualified_evidence"),
     ({"extractions": []}, "no_exact_qualified_evidence"),
