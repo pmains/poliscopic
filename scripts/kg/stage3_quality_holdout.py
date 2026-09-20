@@ -219,7 +219,13 @@ def build_packet(documents: Sequence[Mapping[str, Any]], *, seed: str, max_docum
                         "qualifier_retention": "exact qualifier retention among matched actions",
                         "item_association": "correct item reference among matched actions",
                         "temporal_attribution": "correct temporal label among matched actions",
-                        "slices": list(CELL_FIELDS)},
+                        "slices": list(CELL_FIELDS),
+                        "slice_semantics": {"precision": "candidate predicate; source/body/document_type/extraction_method from document",
+                                             "recall": "gold predicate; source/body/document_type/extraction_method from document",
+                                             "minimum_denominators_required": True}},
+            "threshold_contract": {"approved": False, "approved_by": None, "approved_at": None,
+                                   "minimum_denominators": None, "by_slice": None,
+                                   "decision_required": "human must approve every observed slice and denominator floor"},
             "items": items}
     return {**body, "digest": canonical_sha256(body)}
 
@@ -233,6 +239,7 @@ def evaluate_labels(packet: Mapping[str, Any], reviews: Mapping[int | str, Mappi
     if packet.get("kind") != KIND or packet.get("digest") != canonical_sha256({k: v for k, v in packet.items() if k != "digest"}):
         raise HoldoutRefused("packet digest or kind is invalid")
     results, totals = [], Counter()
+    slice_counts: dict[tuple[str, ...], Counter] = defaultdict(Counter)
     for item in packet.get("items", []):
         doc = item["document"]; key = str(doc["document_id"])
         review = reviews.get(key, reviews.get(doc["document_id"]))
@@ -261,7 +268,18 @@ def evaluate_labels(packet: Mapping[str, Any], reviews: Mapping[int | str, Mappi
         if {p.get("prediction_id") for p in predictions} != pred_ids:
             raise HoldoutRefused(f"document {key} prediction labels are not complete")
         matched = set()
+        action_by_id = {action["action_id"]: action for action in actions}
+        prediction_by_id = {prediction["prediction_id"]: prediction for prediction in item["predictions"]}
         for label in predictions:
+            for field in ("qualifier", "item_association", "temporal_attribution"):
+                if field not in label:
+                    raise HoldoutRefused(f"document {key} prediction label lacks {field}")
+            if label["qualifier"] not in QUALIFIER_LABELS:
+                raise HoldoutRefused(f"document {key} has invalid qualifier label")
+            if label["item_association"] not in ASSOCIATION_LABELS:
+                raise HoldoutRefused(f"document {key} has invalid item_association label")
+            if label["temporal_attribution"] not in PREDICTION_TEMPORAL_LABELS:
+                raise HoldoutRefused(f"document {key} has invalid temporal_attribution label")
             status = label.get("status")
             if status not in LABEL_STATUS:
                 raise HoldoutRefused(f"document {key} has invalid prediction status")
@@ -269,13 +287,20 @@ def evaluate_labels(packet: Mapping[str, Any], reviews: Mapping[int | str, Mappi
             if status == "tp":
                 if match not in action_ids or match in matched:
                     raise HoldoutRefused(f"document {key} has invalid or duplicate TP match")
+                if prediction_by_id[label["prediction_id"]]["predicate"] != action_by_id[match]["predicate"]:
+                    raise HoldoutRefused(f"document {key} TP predicate differs from matched gold predicate")
                 matched.add(match)
             elif match is not None:
                 raise HoldoutRefused(f"document {key} FP cannot name a matched action")
             totals[status] += 1
+            prediction = prediction_by_id[label["prediction_id"]]
+            pred_key = tuple(doc[field] for field in DIMENSIONS) + (prediction["predicate"],)
+            slice_counts[pred_key]["precision_tp" if status == "tp" else "precision_fp"] += 1
         for action in actions:
             if action["action_id"] not in matched:
                 totals["fn"] += 1
+            gold_key = tuple(doc[field] for field in DIMENSIONS) + (action["predicate"],)
+            slice_counts[gold_key]["recall_tp" if action["action_id"] in matched else "recall_fn"] += 1
         for action in actions:
             if action["action_id"] in matched:
                 pred = next(p for p in predictions if p.get("matched_action_id") == action["action_id"])
@@ -286,11 +311,22 @@ def evaluate_labels(packet: Mapping[str, Any], reviews: Mapping[int | str, Mappi
                         raise HoldoutRefused(f"document {key} has invalid qualifier label")
                     if field in {"item_association", "temporal_attribution"} and value not in PREDICTION_TEMPORAL_LABELS:
                         raise HoldoutRefused(f"document {key} has invalid {field} label")
-                    totals[counter + ("_ok" if value in ("retained", "correct", "current_meeting") else "_bad")] += 1
+                    good = value == "retained" if field == "qualifier" else value == "correct"
+                    totals[counter + ("_ok" if good else "_bad")] += 1
         results.append({"document_id": int(key), "dimensions": {field: doc[field] for field in DIMENSIONS},
                         "tp": sum(p.get("status") == "tp" for p in predictions),
                         "fp": sum(p.get("status") == "fp" for p in predictions),
                         "fn": sum(a["action_id"] not in matched for a in actions)})
+    slices = {}
+    for key, counts in sorted(slice_counts.items()):
+        precision_den = counts["precision_tp"] + counts["precision_fp"]
+        recall_den = counts["recall_tp"] + counts["recall_fn"]
+        slices["|".join(key)] = {"dimensions": dict(zip(CELL_FIELDS, key)),
+                                  "counts": dict(counts),
+                                  "precision": _ratio(counts["precision_tp"], precision_den),
+                                  "recall": _ratio(counts["recall_tp"], recall_den),
+                                  "minimum_denominator": {"precision": precision_den,
+                                                           "recall": recall_den}}
     return {"packet_digest": packet["digest"], "documents": results,
             "totals": dict(totals),
             "metrics": {"precision": _ratio(totals["tp"], totals["tp"] + totals["fp"]),
@@ -298,7 +334,52 @@ def evaluate_labels(packet: Mapping[str, Any], reviews: Mapping[int | str, Mappi
                         "new_false_positives": totals["fp"], "misses": totals["fn"],
                         "qualifier_retention": _ratio(totals["qualifier_retained_ok"], totals["qualifier_retained_ok"] + totals["qualifier_retained_bad"]),
                         "item_association": _ratio(totals["item_association_ok"], totals["item_association_ok"] + totals["item_association_bad"]),
-                        "temporal_attribution": _ratio(totals["temporal_attribution_ok"], totals["temporal_attribution_ok"] + totals["temporal_attribution_bad"])}}
+                        "temporal_attribution": _ratio(totals["temporal_attribution_ok"], totals["temporal_attribution_ok"] + totals["temporal_attribution_bad"]),
+                        "by_source_body_document_type_extraction_method_predicate": slices}}
+
+
+def evaluate_thresholds(evaluation: Mapping[str, Any], thresholds: Mapping[str, Any]) -> dict[str, Any]:
+    """Apply only an explicit, human-approved threshold contract.
+
+    Every observed slice must have explicit precision/recall thresholds and
+    meet both denominator floors. Missing or undersized slices are refusals,
+    never implicit passes.
+    """
+    if not isinstance(thresholds, Mapping) or thresholds.get("approved") is not True:
+        raise HoldoutRefused("human-approved thresholds are required")
+    _required_text(thresholds.get("approved_by"), "thresholds.approved_by")
+    _required_text(thresholds.get("approved_at"), "thresholds.approved_at")
+    floors = thresholds.get("minimum_denominators")
+    if (not isinstance(floors, Mapping) or
+            not isinstance(floors.get("precision"), int) or floors.get("precision", 0) < 1 or
+            not isinstance(floors.get("recall"), int) or floors.get("recall", 0) < 1):
+        raise HoldoutRefused("positive precision and recall denominator floors are required")
+    configured = thresholds.get("by_slice")
+    slices = ((evaluation.get("metrics") or {}).get(
+        "by_source_body_document_type_extraction_method_predicate") or {})
+    if not isinstance(configured, Mapping):
+        raise HoldoutRefused("thresholds.by_slice must explicitly cover every observed slice")
+    decisions = {}
+    for key, metrics in sorted(slices.items()):
+        policy = configured.get(key)
+        if not isinstance(policy, Mapping):
+            raise HoldoutRefused(f"missing human threshold for slice {key}")
+        for metric in ("precision", "recall"):
+            value = metrics[metric]["value"]
+            denominator = metrics[metric]["denominator"]
+            threshold = policy.get(metric)
+            if (not isinstance(threshold, (int, float)) or isinstance(threshold, bool)
+                    or not 0 <= threshold <= 1):
+                raise HoldoutRefused(f"invalid {metric} threshold for slice {key}")
+            if denominator < floors[metric]:
+                raise HoldoutRefused(f"undersized {metric} denominator for slice {key}: {denominator} < {floors[metric]}")
+            if value is None or value < threshold:
+                raise HoldoutRefused(f"slice {key} fails {metric} threshold")
+        decisions[key] = {"precision": True, "recall": True,
+                          "denominators": {metric: metrics[metric]["denominator"] for metric in ("precision", "recall")}}
+    return {"status": "PASS", "approved_by": thresholds["approved_by"],
+            "approved_at": thresholds["approved_at"], "minimum_denominators": dict(floors),
+            "slices": decisions}
 
 
 def build_correction_proposals(packet_path: str | Path, labels_path: str | Path, *, created_at: str) -> dict[str, Any]:

@@ -81,6 +81,45 @@ def test_full_document_labels_measure_recall_fp_qualifier_item_and_temporal():
     assert metrics["metrics"]["new_false_positives"] == 0
     assert metrics["metrics"]["misses"] == 1
     assert metrics["metrics"]["qualifier_retention"]["value"] == 0.0
+    assert metrics["metrics"]["temporal_attribution"]["value"] == 1.0
+    assert metrics["metrics"]["by_source_body_document_type_extraction_method_predicate"]
+
+
+def test_threshold_evaluator_requires_explicit_complete_slices_and_denominators():
+    value = H.build_packet([doc(10)], seed="s", max_documents=1, excluded_ids=set(),
+                           development_population_digest="d" * 64, inventory_binding={}, created_at="now")
+    text = value["items"][0]["retained_text"]
+    review = {"coverage": "complete", "gold_actions": [{
+        "action_id": "a1", "predicate": "approved", "outcome_base": "approved",
+        "qualifier": None, "qualifier_text": None,
+        "span": {"start": 0, "end": 1, "sha256": H.text_sha256(text[:1])},
+        "item_reference": "3", "temporal_attribution": "current_meeting"}],
+        "prediction_labels": [{"prediction_id": "p-10", "status": "tp",
+                               "matched_action_id": "a1", "qualifier": "not_applicable",
+                               "item_association": "correct", "temporal_attribution": "correct"}]}
+    evaluation = H.evaluate_labels(value, {"10": review})
+    key = next(iter(evaluation["metrics"]["by_source_body_document_type_extraction_method_predicate"]))
+    policy = {"approved": True, "approved_by": "human", "approved_at": "now",
+              "minimum_denominators": {"precision": 1, "recall": 1},
+              "by_slice": {key: {"precision": 1.0, "recall": 1.0}}}
+    assert H.evaluate_thresholds(evaluation, policy)["status"] == "PASS"
+    missing = dict(policy); missing["by_slice"] = {}
+    with pytest.raises(H.HoldoutRefused, match="missing human threshold"):
+        H.evaluate_thresholds(evaluation, missing)
+    undersized = dict(policy); undersized["minimum_denominators"] = {"precision": 2, "recall": 1}
+    with pytest.raises(H.HoldoutRefused, match="undersized precision"):
+        H.evaluate_thresholds(evaluation, undersized)
+
+
+def test_temporal_prediction_must_be_correctness_label_not_gold_class():
+    value = H.build_packet([doc(10)], seed="s", max_documents=1, excluded_ids=set(),
+                           development_population_digest="e" * 64, inventory_binding={}, created_at="now")
+    with pytest.raises(H.HoldoutRefused, match="temporal_attribution label"):
+        H.evaluate_labels(value, {"10": {"coverage": "complete", "gold_actions": [],
+            "prediction_labels": [{"prediction_id": "p-10", "status": "fp",
+                                    "matched_action_id": None, "qualifier": "not_applicable",
+                                    "item_association": "not_applicable",
+                                    "temporal_attribution": "current_meeting"}]}})
 
 
 def test_prediction_label_set_must_be_complete():
