@@ -272,15 +272,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--packet-dir", type=Path, default=REPO / "data/kg-plans")
     parser.add_argument("--report-out", type=Path, required=True)
     parser.add_argument("--seed", type=Path, action="append")
-    parser.add_argument("--no-exec", action="store_true", help="test/bootstrap only; do not exec the writer")
     args = parser.parse_args(argv)
     seed_paths = tuple(args.seed) if args.seed else DEFAULT_SEEDS
     intent: dict[str, Any] | None = None
     try:
+        # Keep report context available even if a later prerequisite refuses.
+        try:
+            intent = {"plan_digest": load_verified(args.plan).get("digest"),
+                      "design_digest": load_verified(args.design).get("digest"),
+                      "run_id": args.run_id}
+        except Exception:
+            intent = {"run_id": args.run_id}
         bootstrap(run_id=args.run_id, plan_path=args.plan, design_path=args.design,
                   approver=args.approver, writer_role=args.writer_role, state_dir=args.state_dir,
                   backup_root=args.backup_root, packet_dir=args.packet_dir, report_path=args.report_out,
-                  seed_paths=seed_paths, exec_runner=not args.no_exec)
+                  seed_paths=seed_paths, exec_runner=True)
         return 0
     except Exception as exc:
         try:
