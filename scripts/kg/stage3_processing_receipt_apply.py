@@ -129,6 +129,15 @@ def _pgcrypto_available(connection: Any) -> bool:
     return connection.execute(text("SELECT to_regprocedure('digest(bytea,text)') IS NOT NULL")).scalar_one() is True
 
 
+def _live_target_matches(connection: Any, packet: Mapping[str, Any]) -> bool:
+    """Recheck the server-selected database and authenticated writer in-transaction."""
+    live_database, live_writer = connection.execute(
+        text("SELECT current_database(), current_user")
+    ).one()
+    return (str(live_database) == str(packet["target"]["database"])
+            and str(live_writer) == str(packet["writer_role"]))
+
+
 def _terminal(*, packet: Mapping[str, Any], plan: Mapping[str, Any], offset: int,
               selected: int, success: int, failed: int, held: int, replay: int) -> dict[str, Any]:
     body = {"kind": "kg-stage3-processing-receipt-apply-terminal", "version": "1.0",
@@ -176,6 +185,8 @@ def apply_batch(engine: Any, *, plan: Mapping[str, Any], design_packet: Mapping[
         try:
             connection.execute(text("SET LOCAL TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
             connection.execute(text("SELECT pg_advisory_xact_lock(:lock)"), {"lock": LOCK_ID})
+            if not _live_target_matches(connection, apply_packet):
+                raise ApplyRefused("authenticated writer or live database differs from authorized packet")
             if not _pgcrypto_available(connection):
                 raise ApplyRefused("pgcrypto digest(bytea,text) capability is unavailable")
             # The schema is additive and is created only once, under the same lock.
@@ -235,6 +246,8 @@ def compensating_rollback(engine: Any, *, plan: Mapping[str, Any], design_packet
         try:
             connection.execute(text("SET LOCAL TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
             connection.execute(text("SELECT pg_advisory_xact_lock(:lock)"), {"lock": LOCK_ID})
+            if not _live_target_matches(connection, apply_packet):
+                raise ApplyRefused("authenticated writer or live database differs from authorized packet")
             if not _pgcrypto_available(connection):
                 raise ApplyRefused("pgcrypto digest(bytea,text) capability is unavailable")
             if connection.execute(text("SELECT to_regclass('processing_receipts')")).scalar_one() is None or not _schema_is_complete(connection):

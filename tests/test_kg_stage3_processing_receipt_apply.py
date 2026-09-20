@@ -30,6 +30,7 @@ def test_enabled_runner_still_has_no_false_success_surface():
     assert "Callable[[Mapping" not in source
     assert "digest(bytea,text) capability is unavailable" in source
     assert "terminal_dir.is_dir()" in source
+    assert "current_database(), current_user" in source
 
 
 def test_cli_cannot_supply_an_alternate_database_target():
