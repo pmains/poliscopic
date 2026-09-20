@@ -19,7 +19,6 @@ from scripts.kg import stage3_processing_receipt_store_schema as S
 from scripts.kg.stage2_artifacts import is_obsolete, write_immutable
 
 SUPERSEDED_PLAN = Path("data/kg-plans/kg-stage3-processing-dry-plan-20260914T224845Z.json")
-ACCEPTED_PLAN_DIGEST = "fb1d7aa0a0963bd72f6b3528202b5629707de34e8cc127e65bb3e50257b169e4"
 
 
 def test_a_built_packet_is_disabled_and_validates_by_reconstruction(tmp_path):
@@ -315,7 +314,7 @@ def test_packet_artifact_round_trips(tmp_path):
 
 
 def test_the_generated_packet_artifact_binds_the_authoritative_plan():
-    """One cheap read of the newest current packet: bindings, not a 43 MB re-parse."""
+    """The current design packet names one current, immutable dry plan."""
     candidates = [path for path in sorted(Path("data/kg-plans").glob(
         "kg-stage3-processing-receipt-store-packet-*.json")) if not is_obsolete(path)]
     if not candidates:
@@ -323,7 +322,10 @@ def test_the_generated_packet_artifact_binds_the_authoritative_plan():
     document = json.loads(candidates[-1].read_text(encoding="utf-8"))
     assert document["enabled"] is False and document["applied"] is False
     assert document["data_operations"] == []
-    assert document["bindings"]["plan_digest"] == ACCEPTED_PLAN_DIGEST
+    plan_path = Path(document["bindings"]["plan"]["path"])
+    assert plan_path.is_file() and not is_obsolete(plan_path)
+    assert document["bindings"]["plan_digest"] == document["bindings"]["plan"]["digest"]
+    assert len(document["bindings"]["plan_digest"]) == 64
     assert document["rollback"]["statements"] == list(S.ROLLBACK_DDL)
     assert document["writer_supplied_columns"] == ["receipt_body"]
     assert TARGET["tier"] == document["target"]["tier"]

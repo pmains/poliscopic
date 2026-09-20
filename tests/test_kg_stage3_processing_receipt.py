@@ -115,6 +115,9 @@ def test_canonical_digest_and_identity_agreement_are_enforced():
         tampered(processing_identity=[R.SOURCE_KINDS[0], 1])))
     assert any("content_sha256 must be 64 lowercase hex" in p for p in R.validate_receipt(
         tampered(content_sha256="DEADBEEF", identity=(2, "DEADBEEF"))))
+    for index, value in ((0, 9), (1, "1"), (3, 9), (4, None), (5, True)):
+        assert any("canonical typed values" in p for p in R.validate_receipt(
+            tampered(identity=(index, value)))), (index, value)
 
 
 def test_status_reason_and_time_are_enforced():
@@ -218,10 +221,14 @@ def test_arrivals_reconcile_across_many_identities():
                                {"kind": R.RECEIPT_KIND, "processing_identity": None}])
     assert merged["arrivals"] == 5 and merged["identities"] == 3
     assert merged["invalid_arrivals"] == 1 and merged["unkeyable_invalid_arrivals"] == 1
-    # id 1 is newer than its stored receipt, id 2 is new, id 3's later arrival wins.
-    assert merged["writes"] == merged["writes_by_identity"] == 3
-    assert merged["superseded_in_batch"] == 1 and merged["duplicates"] == 0
-    assert merged["reconciles"] is True and merged["max_writes_per_identity"] == 1
+    # An unkeyable malformed arrival taints the entire batch; it cannot silently
+    # append a partial valid-looking subset.
+    assert merged["writes"] == merged["writes_by_identity"] == 0
+    assert merged["counts"]["refuse"] == 3
+    assert {action["reason"] for action in merged["actions"]} == {
+        "unkeyable_invalid_arrival_in_batch"}
+    assert merged["superseded_in_batch"] == 0 and merged["duplicates"] == 0
+    assert merged["reconciles"] is True and merged["max_writes_per_identity"] == 0
 
 
 def test_stored_history_is_folded_first_and_refuses_unresolved_conflicts():

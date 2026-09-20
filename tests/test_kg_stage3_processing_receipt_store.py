@@ -39,6 +39,7 @@ def test_one_canonical_body_and_every_other_payload_column_is_generated():
                  if S.DEF in declaration}
     assert set(generated) == set(S.DERIVED_FROM_BODY)
     assert "receipt_body" not in generated
+    assert all("NOT NULL" in declaration for declaration in generated.values())
     for name in ("source_kind", "content_sha256", "receipt_digest", "status", "recorded_at",
                  "acquisition_class", "does_not_prove_processing"):
         assert name in generated, f"{name} must be generated from the body"
@@ -95,6 +96,13 @@ def test_database_checks_bind_the_whole_receipt_identity_to_its_canonical_body()
     assert "receipt_body ->> 'source_kind' = source_kind" in joined
     assert "(receipt_body ->> 'source_id')::bigint = source_id" in joined
     assert "receipt_body ->> 'extractor_version' = extractor_version" in joined
+    assert "processing_receipts_body_identity_types" in joined
+    assert "jsonb_typeof(receipt_body #> '{processing_identity,1}') = 'number'" in joined
+    assert "processing_receipts_body_field_types" in joined
+    assert "jsonb_typeof(receipt_body -> 'source_id') = 'number'" in joined
+    assert "jsonb_typeof(receipt_body #> '{acquisition,does_not_prove_processing}') = 'boolean'" in joined
+    assert "processing_receipts_extractor_version_registered" in joined
+    assert f"extractor_version = '{R.EXTRACTOR_VERSION}'" in joined
 
 
 def test_schema_declaration_tampering_is_refused():

@@ -31,7 +31,7 @@ INDEX_INSERTED = "processing_receipts_inserted_idx"
 FOREIGN_KEY_SOURCE = "processing_receipts_source_id_fkey"
 PRIMARY_KEY = "processing_receipts_pkey"
 RECEIPT_ID_SEQUENCE = f"{TABLE}_receipt_id_seq"
-SIGNATURE_VERSION = "kg-stage3-processing-receipts-schema/2.1"
+SIGNATURE_VERSION = "kg-stage3-processing-receipts-schema/2.3"
 HEX64 = r"^[0-9a-f]{64}$"
 
 SOURCE_KINDS = ("supporting_document",)
@@ -58,38 +58,38 @@ JSONB_PATH = "receipt_body #>> "
 COLUMNS = (
     ("receipt_id", "bigserial", "store-assigned row identity"),
     ("receipt_body", "jsonb NOT NULL", "the one canonical receipt body the writer supplies"),
-    ("source_kind", f"text {DEF} ({JSONB_PATH}'{{processing_identity,0}}') STORED",
+    ("source_kind", f"text {DEF} ({JSONB_PATH}'{{processing_identity,0}}') STORED NOT NULL",
      "body.processing_identity[0]"),
-    ("source_id", f"bigint {DEF} (({JSONB_PATH}'{{processing_identity,1}}')::bigint) STORED",
+    ("source_id", f"bigint {DEF} (({JSONB_PATH}'{{processing_identity,1}}')::bigint) STORED NOT NULL",
      "body.processing_identity[1]"),
-    ("content_sha256", f"char(64) {DEF} ({JSONB_PATH}'{{processing_identity,2}}') STORED",
+    ("content_sha256", f"char(64) {DEF} ({JSONB_PATH}'{{processing_identity,2}}') STORED NOT NULL",
      "body.processing_identity[2]"),
     ("extraction_method",
-     f"text {DEF} ({JSONB_PATH}'{{processing_identity,3}}') STORED",
+     f"text {DEF} ({JSONB_PATH}'{{processing_identity,3}}') STORED NOT NULL",
      "body.processing_identity[3]"),
-    ("extractor", f"text {DEF} ({JSONB_PATH}'{{processing_identity,4}}') STORED",
+    ("extractor", f"text {DEF} ({JSONB_PATH}'{{processing_identity,4}}') STORED NOT NULL",
      "body.processing_identity[4]"),
-    ("extractor_version", f"text {DEF} ({JSONB_PATH}'{{processing_identity,5}}') STORED",
+    ("extractor_version", f"text {DEF} ({JSONB_PATH}'{{processing_identity,5}}') STORED NOT NULL",
      "body.processing_identity[5]"),
-    ("producer_version", f"text {DEF} ({JSONB_TEXT}'producer_version') STORED",
+    ("producer_version", f"text {DEF} ({JSONB_TEXT}'producer_version') STORED NOT NULL",
      "body.producer_version"),
-    ("receipt_digest", f"char(64) {DEF} ({JSONB_TEXT}'digest') STORED", "body.digest"),
-    ("status", f"text {DEF} ({JSONB_TEXT}'status') STORED", "body.status"),
-    ("reason", f"text {DEF} (coalesce({JSONB_TEXT}'reason', '')) STORED", "body.reason"),
+    ("receipt_digest", f"char(64) {DEF} ({JSONB_TEXT}'digest') STORED NOT NULL", "body.digest"),
+    ("status", f"text {DEF} ({JSONB_TEXT}'status') STORED NOT NULL", "body.status"),
+    ("reason", f"text {DEF} (coalesce({JSONB_TEXT}'reason', '')) STORED NOT NULL", "body.reason"),
     ("recorded_at",
-     f"text {DEF} ({JSONB_TEXT}'recorded_at') STORED",
+     f"text {DEF} ({JSONB_TEXT}'recorded_at') STORED NOT NULL",
      "body.recorded_at (exact source/observation instant text)"),
     ("recorded_at_sort_key",
-     f"bigint {DEF} ({RECORDED_AT_KEY_FUNCTION}({JSONB_TEXT}'recorded_at')) STORED",
+     f"bigint {DEF} ({RECORDED_AT_KEY_FUNCTION}({JSONB_TEXT}'recorded_at')) STORED NOT NULL",
      "immutable UTC microsecond sort key derived from body.recorded_at"),
     ("inserted_at", "timestamptz NOT NULL DEFAULT now()", "ingestion/system clock"),
     ("acquisition_class",
-     f"text {DEF} ({JSONB_PATH}'{{acquisition,class}}') STORED", "body.acquisition.class"),
+     f"text {DEF} ({JSONB_PATH}'{{acquisition,class}}') STORED NOT NULL", "body.acquisition.class"),
     ("legacy_swept_at_present",
-     f"boolean {DEF} (({JSONB_PATH}'{{acquisition,legacy_swept_at_present}}')::boolean) STORED",
+     f"boolean {DEF} (({JSONB_PATH}'{{acquisition,legacy_swept_at_present}}')::boolean) STORED NOT NULL",
      "body.acquisition.legacy_swept_at_present"),
     ("does_not_prove_processing",
-     f"boolean {DEF} (({JSONB_PATH}'{{acquisition,does_not_prove_processing}}')::boolean) STORED",
+     f"boolean {DEF} (({JSONB_PATH}'{{acquisition,does_not_prove_processing}}')::boolean) STORED NOT NULL",
      "body.acquisition.does_not_prove_processing"),
 )
 
@@ -105,6 +105,33 @@ CONSTRAINTS = (
      "jsonb_typeof(receipt_body -> 'processing_identity') = 'array' "
      "AND jsonb_array_length(receipt_body -> 'processing_identity') = 6",
      "the body must carry exactly the six processing-identity components"),
+    ("processing_receipts_body_identity_types",
+     "jsonb_typeof(receipt_body #> '{processing_identity,0}') = 'string' "
+     "AND jsonb_typeof(receipt_body #> '{processing_identity,1}') = 'number' "
+     "AND jsonb_typeof(receipt_body #> '{processing_identity,2}') = 'string' "
+     "AND jsonb_typeof(receipt_body #> '{processing_identity,3}') = 'string' "
+     "AND jsonb_typeof(receipt_body #> '{processing_identity,4}') = 'string' "
+     "AND jsonb_typeof(receipt_body #> '{processing_identity,5}') = 'string'",
+     "the JSON identity uses the exact typed receipt-contract representation"),
+    ("processing_receipts_body_field_types",
+     "jsonb_typeof(receipt_body -> 'kind') = 'string' "
+     "AND jsonb_typeof(receipt_body -> 'version') = 'string' "
+     "AND jsonb_typeof(receipt_body -> 'producer_version') = 'string' "
+     "AND jsonb_typeof(receipt_body -> 'source_kind') = 'string' "
+     "AND jsonb_typeof(receipt_body -> 'source_id') = 'number' "
+     "AND jsonb_typeof(receipt_body -> 'content_sha256') = 'string' "
+     "AND jsonb_typeof(receipt_body -> 'extraction_method') = 'string' "
+     "AND jsonb_typeof(receipt_body -> 'extractor') = 'string' "
+     "AND jsonb_typeof(receipt_body -> 'extractor_version') = 'string' "
+     "AND jsonb_typeof(receipt_body -> 'status') = 'string' "
+     "AND jsonb_typeof(receipt_body -> 'reason') = 'string' "
+     "AND jsonb_typeof(receipt_body -> 'recorded_at') = 'string' "
+     "AND jsonb_typeof(receipt_body -> 'digest') = 'string' "
+     "AND jsonb_typeof(receipt_body -> 'acquisition') = 'object' "
+     "AND jsonb_typeof(receipt_body #> '{acquisition,class}') = 'string' "
+     "AND jsonb_typeof(receipt_body #> '{acquisition,legacy_swept_at_present}') = 'boolean' "
+     "AND jsonb_typeof(receipt_body #> '{acquisition,does_not_prove_processing}') = 'boolean'",
+     "every flattened receipt field uses the exact JSON type required by the contract"),
     ("processing_receipts_body_kind", f"receipt_body ->> 'kind' = '{receipt_contract.RECEIPT_KIND}'",
      "the body is a processing receipt, not an arbitrary JSON object"),
     ("processing_receipts_body_version",
@@ -187,6 +214,31 @@ TABLE_DDL = f"""CREATE TABLE {TABLE} (
     CONSTRAINT processing_receipts_body_identity_shape
         CHECK (jsonb_typeof(receipt_body -> 'processing_identity') = 'array'
                AND jsonb_array_length(receipt_body -> 'processing_identity') = 6),
+    CONSTRAINT processing_receipts_body_identity_types
+        CHECK (jsonb_typeof(receipt_body #> '{{processing_identity,0}}') = 'string'
+               AND jsonb_typeof(receipt_body #> '{{processing_identity,1}}') = 'number'
+               AND jsonb_typeof(receipt_body #> '{{processing_identity,2}}') = 'string'
+               AND jsonb_typeof(receipt_body #> '{{processing_identity,3}}') = 'string'
+               AND jsonb_typeof(receipt_body #> '{{processing_identity,4}}') = 'string'
+               AND jsonb_typeof(receipt_body #> '{{processing_identity,5}}') = 'string'),
+    CONSTRAINT processing_receipts_body_field_types
+        CHECK (jsonb_typeof(receipt_body -> 'kind') = 'string'
+               AND jsonb_typeof(receipt_body -> 'version') = 'string'
+               AND jsonb_typeof(receipt_body -> 'producer_version') = 'string'
+               AND jsonb_typeof(receipt_body -> 'source_kind') = 'string'
+               AND jsonb_typeof(receipt_body -> 'source_id') = 'number'
+               AND jsonb_typeof(receipt_body -> 'content_sha256') = 'string'
+               AND jsonb_typeof(receipt_body -> 'extraction_method') = 'string'
+               AND jsonb_typeof(receipt_body -> 'extractor') = 'string'
+               AND jsonb_typeof(receipt_body -> 'extractor_version') = 'string'
+               AND jsonb_typeof(receipt_body -> 'status') = 'string'
+               AND jsonb_typeof(receipt_body -> 'reason') = 'string'
+               AND jsonb_typeof(receipt_body -> 'recorded_at') = 'string'
+               AND jsonb_typeof(receipt_body -> 'digest') = 'string'
+               AND jsonb_typeof(receipt_body -> 'acquisition') = 'object'
+               AND jsonb_typeof(receipt_body #> '{{acquisition,class}}') = 'string'
+               AND jsonb_typeof(receipt_body #> '{{acquisition,legacy_swept_at_present}}') = 'boolean'
+               AND jsonb_typeof(receipt_body #> '{{acquisition,does_not_prove_processing}}') = 'boolean'),
     CONSTRAINT processing_receipts_body_kind
         CHECK (receipt_body ->> 'kind' = '{receipt_contract.RECEIPT_KIND}'),
     CONSTRAINT processing_receipts_body_version
@@ -219,6 +271,8 @@ TABLE_DDL = f"""CREATE TABLE {TABLE} (
         CHECK (btrim(extraction_method) <> ''),
     CONSTRAINT processing_receipts_extractor_version_present
         CHECK (btrim(extractor_version) <> ''),
+    CONSTRAINT processing_receipts_extractor_version_registered
+        CHECK (extractor_version = '{receipt_contract.EXTRACTOR_VERSION}'),
     CONSTRAINT processing_receipts_status_registered
         CHECK (status IN ('success', 'failed')),
     CONSTRAINT processing_receipts_failure_reason_present

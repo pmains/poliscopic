@@ -184,6 +184,12 @@ def validate_receipt(receipt: Any) -> list[str]:
     identity = list(identity)
     if len(identity) != len(IDENTITY_FIELDS):
         problems.append("processing_identity must carry exactly six fields")
+    elif (not isinstance(identity[0], str) or not identity[0].strip() or
+          not isinstance(identity[1], int) or isinstance(identity[1], bool) or
+          identity[1] <= 0 or not _hex64(identity[2]) or
+          any(not isinstance(identity[index], str) or not identity[index].strip()
+              for index in (3, 4, 5))):
+        problems.append("processing_identity fields must use their canonical typed values")
 
     source_kind = str(receipt.get("source_kind") or "")
     if source_kind not in SOURCE_KINDS:
@@ -202,8 +208,9 @@ def validate_receipt(receipt: Any) -> list[str]:
         problems.append("content_sha256 disagrees with processing_identity")
 
     for index, field in ((3, "extraction_method"), (4, "extractor"), (5, "extractor_version")):
-        value = str(receipt.get(field) or "")
-        if not value.strip():
+        raw_value = receipt.get(field)
+        value = str(raw_value or "")
+        if not isinstance(raw_value, str) or not value.strip():
             problems.append(f"{field} must not be blank")
         elif len(identity) > index and str(identity[index]) != value:
             problems.append(f"{field} disagrees with processing_identity")
@@ -409,6 +416,12 @@ def merge_receipts(existing: Sequence[Mapping[str, Any]] | None,
                          key=lambda item: (str(_iso(item[1]["recorded_at"])), item[0]))
         if unkeyable_stored_invalid:
             action.update(terminal="refuse", reason="unkeyable_invalid_stored_receipt",
+                          consumed=len(ordered))
+        elif unkeyable_invalid_arrivals:
+            # A batch with an unkeyable malformed receipt cannot establish that its
+            # valid-looking subset is complete.  Refuse every keyed arrival rather
+            # than silently appending a partial batch.
+            action.update(terminal="refuse", reason="unkeyable_invalid_arrival_in_batch",
                           consumed=len(ordered))
         elif key in tainted_invalid:
             action.update(terminal="refuse", reason="stored_receipt_invalid_for_identity",
