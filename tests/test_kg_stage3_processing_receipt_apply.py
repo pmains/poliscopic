@@ -26,3 +26,5 @@ def test_runner_is_disabled_and_has_no_false_success_surface():
     assert "DELETE FROM processing_receipts" not in source
     assert "SELECT receipt_body FROM processing_receipts" in source
     assert "terminal-receipt directory is required" in source
+    assert "extract_entities_from_doc" in source
+    assert "Callable[[Mapping" not in source

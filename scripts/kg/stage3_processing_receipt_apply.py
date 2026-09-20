@@ -15,10 +15,11 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Mapping
 
 from sqlalchemy import text
 
+from scripts.entities.sweep_docs_extraction import extract_entities_from_doc
 from scripts.kg import stage3_processing_receipt as receipt
 from scripts.kg import stage3_processing_receipt_apply_packet as authorization
 from scripts.kg import stage3_processing_receipt_store_backup as backup
@@ -38,7 +39,8 @@ CODE_FILES = ("scripts/kg/stage3_processing_receipt_apply.py",
               "scripts/kg/stage3_processing_receipt_store_rows.py",
               "scripts/kg/stage3_processing_receipt_store_backup.py",
               "scripts/kg/stage3_processing_receipt.py",
-              "scripts/kg/stage3_processing_plan_validator.py")
+              "scripts/kg/stage3_processing_plan_validator.py",
+              "scripts/entities/sweep_docs_extraction.py")
 
 
 class ApplyRefused(RuntimeError):
@@ -95,6 +97,11 @@ def _receipt_row(connection: Any, body: Mapping[str, Any]) -> None:
                        {"body": json.dumps(body, sort_keys=True)})
 
 
+def _process_current_extractor(source: Mapping[str, Any]) -> None:
+    """Invoke the declared current extractor; caller injection cannot forge success."""
+    extract_entities_from_doc(str(source.get("text_content") or ""), rejections=[])
+
+
 def _recorded_at() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -142,8 +149,8 @@ def gate(*, engine: Any, plan: Mapping[str, Any], design_packet: Mapping[str, An
 
 def apply_batch(engine: Any, *, plan: Mapping[str, Any], design_packet: Mapping[str, Any],
                 apply_packet: Mapping[str, Any], backup_path: str | Path,
-                authorization_token: str, processor: Callable[[Mapping[str, Any]], None],
-                offset: int = 0, terminal_dir: Path | None = None) -> dict[str, Any]:
+                authorization_token: str, offset: int = 0,
+                terminal_dir: Path | None = None) -> dict[str, Any]:
     """Execute one exact plan window after every admission check; disabled by default."""
     if terminal_dir is None:
         raise ApplyRefused("an existing terminal-receipt directory is required before any write")
@@ -183,7 +190,7 @@ def apply_batch(engine: Any, *, plan: Mapping[str, Any], design_packet: Mapping[
                         continue
                     raise ApplyRefused(f"source {record['source_id']} has non-replay receipt history")
                 try:
-                    processor(source)  # exact extractor invocation supplied by the authorized caller
+                    _process_current_extractor(source)
                     body = receipt.build_receipt(source, status="success", reason="", recorded_at=_recorded_at())
                     success += 1
                 except Exception as exc:  # a failure is durable, never misreported as success
