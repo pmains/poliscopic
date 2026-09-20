@@ -216,6 +216,13 @@ def test_negation_guard_does_not_cross_into_adjacent_result():
     assert [event["outcome"] for event in events] == ["discussed"]
 
 
+def test_explicit_no_action_survives_earlier_agenda_wording():
+    text = "For discussion only. No action will take place at this meeting."
+    assert [event["outcome"] for event in extract_events_from_text(1, text)] == [
+        "no_action"
+    ]
+
+
 @pytest.mark.parametrize(
     "text",
     [

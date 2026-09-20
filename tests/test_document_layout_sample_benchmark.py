@@ -9,6 +9,7 @@ from scripts.docs.benchmark_layout_sample import (
     _classify_match,
     _context_score,
     _local_context,
+    _outcome_oracle_digest,
     apply_label_corrections,
     select_full_packet,
     select_replay,
@@ -50,9 +51,11 @@ def test_local_context_is_bounded_to_adjacent_lines():
     assert _local_context(text, start, start + 8) == "header Approved 3. Assignment next detail"
 
 
-def test_canonical_outcome_uses_event_rules():
+def test_canonical_outcome_uses_frozen_oracle():
     assert _canonical_outcome("Approved with stipulations") == "approved_with_conditions"
     assert _canonical_outcome("Preliminary Review") == "discussed"
+    assert _canonical_outcome("For discussion") == "discussed"
+    assert len(_outcome_oracle_digest()) == 64
 
 
 def test_matcher_does_not_call_unaligned_emitted_outcome_a_miss():

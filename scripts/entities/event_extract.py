@@ -84,6 +84,16 @@ ACTION_RE = re.compile(
     re.MULTILINE | re.IGNORECASE,
 )
 
+
+def canonical_outcome_for_predicate(predicate: str) -> str:
+    """Map an action predicate to vocabulary without applying context guards."""
+    match = ACTION_RE.search(str(predicate))
+    if match:
+        for index, (_pattern, candidate_outcome) in enumerate(ACTION_PATTERNS):
+            if match.group(f"a{index}"):
+                return candidate_outcome
+    return re.sub(r"\s+", "_", str(predicate).strip().casefold())
+
 # ── Case/project number patterns ────────────────────────────────────────
 CASE_RE = re.compile(
     r"(?:Z[-/\s]?\d{3,6}|"
@@ -237,13 +247,7 @@ def extract_events_from_text(
                 )
             ), None)
 
-            outcome = None
-            for index, (_pattern, candidate_outcome) in enumerate(ACTION_PATTERNS):
-                if match.group(f"a{index}"):
-                    outcome = candidate_outcome
-                    break
-            if not outcome:
-                outcome = action_verb.lower().replace(" ", "_")
+            outcome = canonical_outcome_for_predicate(action_verb)
 
             if region is not None:
                 raw_text = str(region.get("text", "")).strip()

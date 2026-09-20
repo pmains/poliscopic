@@ -93,7 +93,7 @@ def non_current_result_reason(
     # Agenda labels and requested/recommended-action prose describe what may be
     # considered, not what happened.  Strong past-tense result wording at the
     # beginning of a row is retained as a positive control.
-    if _AGENDA_MARKER.search(whole) and not re.match(
+    if normalized != "no action" and _AGENDA_MARKER.search(whole) and not re.match(
         r"^\s*(?:item\s+)?(?:\d+[A-Z]?[.):]\s*)?"
         r"(?:approved|denied|continued|tabled|adopted|received|discussed|"
         r"withdrawn|introduced|amended|sustained|vacated|extended|deferred)\b",

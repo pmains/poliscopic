@@ -49,6 +49,37 @@ STOPWORDS = {
     "a", "an", "and", "as", "at", "be", "by", "for", "from", "in",
     "is", "it", "of", "on", "or", "the", "this", "to", "was", "with",
 }
+OUTCOME_ORACLE_VERSION = "stage3-benchmark-outcome-oracle/1.0"
+OUTCOME_ORACLE = {
+    "adopted": "adopted",
+    "amended": "amended",
+    "approved": "approved",
+    "approved subject to": "approved_with_conditions",
+    "approved with stipulations": "approved_with_conditions",
+    "called to order": "called_to_order",
+    "continued": "continued",
+    "deferred": "deferred",
+    "denied": "denied",
+    "discussed": "discussed",
+    "discussion only": "discussed",
+    "extended": "extended",
+    "for discussion": "discussed",
+    "introduced": "introduced",
+    "no action": "no_action",
+    "no response": "no_action",
+    "preliminary review": "discussed",
+    "received": "received",
+    "received and filed": "received",
+    "sustained": "sustained",
+    "tabled": "tabled",
+    "vacated": "vacated",
+    "withdrawn": "withdrawn",
+}
+
+
+def _outcome_oracle_digest() -> str:
+    body = json.dumps(OUTCOME_ORACLE, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -103,10 +134,8 @@ def _local_context(text: str, start: int, end: int) -> str:
 
 
 def _canonical_outcome(predicate: str) -> str:
-    events = extract_events_from_text(0, predicate)
-    if events:
-        return str(events[0]["outcome"])
-    return _normalized_predicate(predicate).replace(" ", "_")
+    normalized = _normalized_predicate(predicate)
+    return OUTCOME_ORACLE.get(normalized, normalized.replace(" ", "_"))
 
 
 def apply_label_corrections(
@@ -483,7 +512,7 @@ def main() -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "kind": "document-layout-diagnostic-benchmark",
-        "version": "1.0",
+        "version": "1.1",
         "created_at": created_at,
         "mode": "read-only",
         "sample_policy": {
@@ -498,6 +527,10 @@ def main() -> int:
             "replay_of": str(args.replay) if args.replay else None,
         },
         "bindings": {
+            "outcome_oracle": {
+                "version": OUTCOME_ORACLE_VERSION,
+                "sha256": _outcome_oracle_digest(),
+            },
             "packet": {"path": str(args.packet), "sha256": _digest(args.packet)},
             "labels": {"path": str(args.labels), "sha256": _digest(args.labels)},
             "source": {"path": str(args.source), "sha256": _digest(args.source)},
