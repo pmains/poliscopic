@@ -3,7 +3,7 @@
 Legacy OnBase image OCR compatibility path.
 
 New stored-document extraction must use ``scripts/docs/extract.py`` so retained
-text and the ``document-layout/1.0`` artifact are produced together. This
+text and the current ``document-layout`` artifact are produced together. This
 script remains for the older OnBase page-image workflow and emits plain text;
 it is not a replacement for the governed PDF extraction cascade.
 

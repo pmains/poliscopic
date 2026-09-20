@@ -65,9 +65,16 @@ REMEDIATION.md
 # OpenClaw
 .clawhub/
 
-# Docs
+# Private repository documentation (root only; do not hide scripts/docs)
 memory/
-docs/
+/docs/
+
+# Local document-pipeline operational helpers outside the published runtime closure
+/scripts/docs/_extract_worker.py
+/scripts/docs/docs_batch.sh
+/scripts/docs/downloader_daily.sh
+/scripts/docs/reclassify_process_error.py
+/scripts/docs/refresh_civicclerk_urls.py
 
 # Internal docs — not for public source control
 STYLE.md

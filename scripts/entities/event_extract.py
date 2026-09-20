@@ -25,13 +25,14 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "scripts"))
 from db import get_engine
 from docs.layout_extract import load_artifact_for_text
+from entities.event_result_context import non_current_result_reason
 from sqlalchemy import text
 
 log = logging.getLogger("event_extract")
 
 WATERMARK_TABLE = "_event_extract_watermark"
 BATCH_SIZE = 50
-EXTRACTOR_VERSION = "2026-09-17.2-semantic-guards"
+EXTRACTOR_VERSION = "2026-09-20.1-context-classifier"
 
 # ── Action verb patterns ────────────────────────────────────────────────
 # Ordered by specificity (longer patterns first to avoid sub-matches)
@@ -196,6 +197,10 @@ def extract_events_from_text(
             action_verb = match.group(0).strip()
             action_start = scope_start + match.start()
             action_end = scope_start + match.end()
+            if non_current_result_reason(
+                action_verb, scoped_text, match.start(), match.end()
+            ):
+                continue
             semantic_start = max(0, action_start - 80)
             semantic_end = min(len(text_content), action_end + 120)
             semantic_context = text_content[semantic_start:semantic_end]
