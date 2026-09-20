@@ -245,6 +245,18 @@ def evaluate_labels(packet: Mapping[str, Any], reviews: Mapping[int | str, Mappi
         action_ids = [_required_text(a.get("action_id"), "gold action_id") for a in actions]
         if len(action_ids) != len(set(action_ids)):
             raise HoldoutRefused(f"document {key} has duplicate gold action IDs")
+        for action in actions:
+            for field in ("predicate", "outcome_base", "qualifier", "qualifier_text",
+                          "span", "item_reference", "temporal_attribution"):
+                if field not in action:
+                    raise HoldoutRefused(f"document {key} gold action {action.get('action_id')} lacks {field}")
+            _required_text(action.get("predicate"), "gold predicate")
+            _required_text(action.get("outcome_base"), "gold outcome_base")
+            _span(action["span"], item["retained_text"], "gold action span")
+            if action.get("temporal_attribution") not in TEMPORAL_LABELS:
+                raise HoldoutRefused(f"document {key} has invalid gold temporal attribution")
+            if action.get("qualifier") is not None and not isinstance(action.get("qualifier"), str):
+                raise HoldoutRefused(f"document {key} has invalid gold qualifier")
         pred_ids = {p.get("prediction_id") for p in item["predictions"]}
         if {p.get("prediction_id") for p in predictions} != pred_ids:
             raise HoldoutRefused(f"document {key} prediction labels are not complete")
