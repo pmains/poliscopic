@@ -58,6 +58,26 @@ def test_prior_terminal_requires_same_target_plan_backup_and_batch_contract(tmp_
     assert assert_raises
 
 
+def test_later_cursor_requires_contiguous_zero_failure_aggregate(tmp_path):
+    old = {"digest": "a" * 64, "target": TARGET, "plan_digest": "b" * 64,
+           "backup_receipt_digest": "c" * 64, "batch_size": 100}
+    aggregate = {"kind": C.KIND, "version": C.VERSION, "authorized_packet_digest": old["digest"],
+                 "plan_digest": old["plan_digest"], "start_offset": 0, "max_batches": 1,
+                 "windows": [{"offset": 0, "selected": 100}],
+                 "totals": {"failed": 0, "swept_at_updates": 0}, "outcome": "complete_window"}
+    path = tmp_path / "aggregate.json"
+    write_immutable(path, aggregate)
+    C._prior_aggregate(path, prior_packet=old, packet=dict(old),
+                       plan={"digest": old["plan_digest"]}, start_offset=100)
+    try:
+        C._prior_aggregate(path, prior_packet=old, packet=dict(old),
+                           plan={"digest": old["plan_digest"]}, start_offset=200)
+    except C.ContinuationRefused:
+        pass
+    else:
+        raise AssertionError("cursor gap must refuse")
+
+
 def test_continuation_driver_is_serial_batch_only_and_never_sweeps():
     source = open(C.__file__).read()
     assert "apply.apply_batch" in source
@@ -65,4 +85,5 @@ def test_continuation_driver_is_serial_batch_only_and_never_sweeps():
     assert "more than one terminal receipt" in source
     assert "terminal_failure" in source
     assert "prior terminal cannot be imported" in source
+    assert "prior aggregate cannot be imported" in source
     assert "UPDATE supporting_documents SET swept_at" not in source

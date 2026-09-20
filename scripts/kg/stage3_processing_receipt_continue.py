@@ -85,6 +85,38 @@ def _prior_terminal(path: Path, *, prior_packet: Mapping[str, Any], packet: Mapp
     return {**terminal, "terminal_receipt_path": str(path)}
 
 
+def _prior_aggregate(path: Path, *, prior_packet: Mapping[str, Any], packet: Mapping[str, Any],
+                     plan: Mapping[str, Any], start_offset: int) -> None:
+    """A later cursor is admissible only when immutable prior coverage proves it."""
+    value = load_verified(path)
+    problems: list[str] = []
+    if value.get("kind") != KIND or value.get("version") != VERSION:
+        problems.append("prior aggregate kind/version is wrong")
+    if value.get("authorized_packet_digest") != prior_packet.get("digest"):
+        problems.append("prior aggregate does not bind supplied prior packet")
+    if value.get("plan_digest") != plan.get("digest") or value.get("outcome") != "complete_window":
+        problems.append("prior aggregate plan/outcome is not resumable")
+    for field in ("target", "plan_digest", "backup_receipt_digest", "batch_size"):
+        if prior_packet.get(field) != packet.get(field):
+            problems.append(f"prior packet {field} differs from current packet")
+    windows = list(value.get("windows") or [])
+    cursor = int(value.get("start_offset") or 0)
+    if cursor != 0 or not windows:
+        problems.append("prior aggregate has no offset-zero coverage")
+    for window in windows:
+        if window.get("offset") != cursor or not isinstance(window.get("selected"), int):
+            problems.append("prior aggregate windows are not contiguous")
+            break
+        cursor += window["selected"]
+    if cursor != start_offset:
+        problems.append("prior aggregate end does not equal requested start offset")
+    totals = value.get("totals") or {}
+    if totals.get("failed") != 0 or totals.get("swept_at_updates") != 0:
+        problems.append("prior aggregate records failed processing or swept_at updates")
+    if problems:
+        raise ContinuationRefused(f"prior aggregate cannot be imported: {problems}")
+
+
 def _aggregate(*, packet: Mapping[str, Any], plan: Mapping[str, Any], windows: list[Mapping[str, Any]],
                start_offset: int, max_batches: int, stopped: str | None) -> dict[str, Any]:
     totals = {field: sum(int(window.get(field) or 0) for window in windows)
@@ -104,18 +136,28 @@ def continue_batches(engine: Any, *, plan: Mapping[str, Any], design_packet: Map
                      apply_packet: Mapping[str, Any], backup_path: Path, token: str,
                      terminal_dir: Path, aggregate_out: Path, start_offset: int,
                      max_batches: int, prior_packet: Mapping[str, Any] | None = None,
-                     prior_terminal_path: Path | None = None) -> dict[str, Any]:
+                     prior_terminal_path: Path | None = None,
+                     prior_aggregate_path: Path | None = None) -> dict[str, Any]:
     if not terminal_dir.is_dir() or max_batches < 1 or start_offset < 0:
         raise ContinuationRefused("existing terminal directory, non-negative offset, and positive max batches are required")
     if aggregate_out.exists():
         raise ContinuationRefused("aggregate receipt path already exists")
-    if (prior_packet is None) != (prior_terminal_path is None):
+    if start_offset == 0 and (prior_packet is None) != (prior_terminal_path is None):
         raise ContinuationRefused("prior packet and prior terminal must be supplied together")
+    if start_offset > 0 and (prior_packet is None or prior_aggregate_path is None):
+        raise ContinuationRefused("a later start offset requires prior packet and aggregate coverage")
+    if start_offset > 0 and prior_terminal_path is not None:
+        raise ContinuationRefused("a later start offset imports its aggregate, not an individual terminal")
     records = list(plan.get("records") or [])
     imported_prior = (_prior_terminal(prior_terminal_path, prior_packet=prior_packet,
                                       packet=apply_packet, plan=plan,
                                       selected=min(int(apply_packet["batch_size"]), len(records)))
                       if prior_packet is not None and prior_terminal_path is not None else None)
+    if prior_aggregate_path is not None:
+        if prior_packet is None:
+            raise ContinuationRefused("prior aggregate requires a prior packet")
+        _prior_aggregate(prior_aggregate_path, prior_packet=prior_packet, packet=apply_packet,
+                         plan=plan, start_offset=start_offset)
     windows: list[dict[str, Any]] = []
     stopped: str | None = None
     batches_started = 0
@@ -165,6 +207,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="immutable packet that owns an explicitly imported prior terminal")
     parser.add_argument("--prior-terminal", type=Path,
                         help="terminal receipt to import instead of replaying offset zero")
+    parser.add_argument("--prior-aggregate", type=Path,
+                        help="immutable aggregate proving contiguous coverage before a later cursor")
     args = parser.parse_args(argv)
     result = continue_batches(get_engine(), plan=load_verified(args.plan), design_packet=load_verified(args.design),
                               apply_packet=load_verified(args.apply), backup_path=args.backup,
@@ -172,7 +216,8 @@ def main(argv: list[str] | None = None) -> int:
                               aggregate_out=args.aggregate_out, start_offset=args.start_offset,
                               max_batches=args.max_batches,
                               prior_packet=load_verified(args.prior_apply) if args.prior_apply else None,
-                              prior_terminal_path=args.prior_terminal)
+                              prior_terminal_path=args.prior_terminal,
+                              prior_aggregate_path=args.prior_aggregate)
     print(json.dumps(result, sort_keys=True))
     return 0
 
