@@ -12,7 +12,7 @@ from scripts.kg.stage2_artifacts import load_verified, write_immutable
 def build(plan, packet, prior, prior_packet, terminal_dir, end):
     C._prior_aggregate(prior, prior_packet=prior_packet, packet=packet, plan=plan,
                        start_offset=int(load_verified(prior)['totals']['selected']))
-    prior_doc=load_verified(prior); windows=list(prior_doc['windows']); offset=int(prior_doc['totals']['selected'])
+    prior_doc=load_verified(prior); windows=[{**w,'terminal_receipt_path':w['path']} for w in prior_doc['windows']]; offset=int(prior_doc['totals']['selected'])
     records=list(plan['records'])
     while offset < end:
         selected=min(int(packet['batch_size']),len(records)-offset)
