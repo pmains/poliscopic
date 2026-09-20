@@ -219,11 +219,11 @@ JURISDICTION_BODIES = {
         "tempe-hpc": "Historic Preservation Commission",
     },
     "mesa": {
-        "mesa-cc": "City Council",
+        "mesa-city-council": "City Council",
         "mesa-pz": "Planning & Zoning Board",
-        "mesa-drb": "Development Review Board",
-        "mesa-boa": "Board of Adjustment",
-        "mesa-hpb": "Historic Preservation Board",
+        "mesa-design-review-board": "Development Review Board",
+        "mesa-board-of-adjustment": "Board of Adjustment",
+        "mesa-historic-preservation-board": "Historic Preservation Board",
     },
     "chandler": {
         "chandler-cc": "City Council",

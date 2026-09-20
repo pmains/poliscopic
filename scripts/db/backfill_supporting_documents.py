@@ -33,6 +33,16 @@ import sys
 import time
 from datetime import datetime, timezone
 
+# Make the shared database-tier authority importable however this tool is invoked.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
+
+from db.tier import (  # noqa: E402
+    DEVELOPMENT,
+    PRODUCTION,
+    TierError,
+    resolve_role_url,
+)
+from ops.production_interlock_guard import require_production_interlock  # noqa: E402
 from sqlalchemy import create_engine, inspect as sa_inspect, text
 
 logging.basicConfig(
@@ -117,10 +127,24 @@ def main() -> int:
                         help="Only consider dev rows with updated_at >= this ISO ts (optional)")
     args = parser.parse_args()
 
+    require_production_interlock(
+        "OP-STATUS" if args.dry_run else "OP-RECON",
+        "scripts/db/backfill_supporting_documents.py",
+    )
+
     dev_url = os.environ.get("DATABASE_URL")
     prod_url = os.environ.get("PROD_DATABASE_URL")
     if not dev_url or not prod_url:
         log.error("DATABASE_URL and PROD_DATABASE_URL must be set")
+        return 1
+
+    # Validate both roles before any engine exists, so a swapped pair can never
+    # reach a connection.
+    try:
+        resolve_role_url(DEVELOPMENT, dev_url, label="dev")
+        resolve_role_url(PRODUCTION, prod_url, label="prod")
+    except TierError as exc:
+        log.error("refusing to backfill an unvalidated target: %s", exc)
         return 1
 
     dev_engine = create_engine(dev_url, pool_size=2, connect_args={"connect_timeout": 10})

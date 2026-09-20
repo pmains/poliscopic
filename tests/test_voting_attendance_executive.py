@@ -1,11 +1,10 @@
 """Tests for voting, attendance, dissent, and executive session participant tracking.
 
 Tests cover:
-- DB table creation for new models
+- DB table creation for active voting models
 - Vote analysis (split/unanimous/tie detection, dissent flagging)
 - Attendance inference (explicit vs inferred absence)
 - Executive session participant extraction
-- CLI inspection commands
 """
 
 import importlib.util
@@ -25,40 +24,6 @@ from sqlalchemy.orm import Session
 # the shared test database URL that conftest.py set up).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import db
-
-
-class TestPublicBodyMemberTable(unittest.TestCase):
-    """Test that PublicBodyMember table works."""
-
-    def test_table_created(self):
-        engine = create_engine("sqlite:///:memory:")
-        db.Base.metadata.create_all(engine)
-        with Session(engine) as session:
-            m = db.PublicBodyMember(
-                body="bos",
-                name="Chairman Jack",
-                normalized_name="chairman jack",
-                title="Chairman",
-                district_or_seat="District 1",
-            )
-            session.add(m)
-            session.commit()
-            retrieved = session.execute(
-                select(db.PublicBodyMember).where(db.PublicBodyMember.name == "Chairman Jack")
-            ).scalar_one()
-            self.assertEqual(retrieved.body, "bos")
-            self.assertEqual(retrieved.normalized_name, "chairman jack")
-
-    def test_body_scoped(self):
-        engine = create_engine("sqlite:///:memory:")
-        db.Base.metadata.create_all(engine)
-        with Session(engine) as session:
-            for body in ("bos", "pz", "adj", "drain", "health", "tab", "ida"):
-                m = db.PublicBodyMember(body=body, name=f"Member {body}", normalized_name=f"member {body}")
-                session.add(m)
-            session.commit()
-            count = session.execute(select(db.PublicBodyMember)).scalars().all()
-            self.assertEqual(len(count), 7)
 
 
 class TestMeetingAttendanceTable(unittest.TestCase):
@@ -529,12 +494,6 @@ class TestInferredAbsenceDetection(unittest.TestCase):
         engine = create_engine("sqlite:///:memory:")
         db.Base.metadata.create_all(engine)
         with Session(engine) as session:
-            # Known members
-            m1 = db.PublicBodyMember(id=1, body="bos", name="Member A", normalized_name="member a")
-            m2 = db.PublicBodyMember(id=2, body="bos", name="Member B", normalized_name="member b")
-            session.add_all([m1, m2])
-            session.flush()
-
             # Only member A voted
             aiv = db.AgendaItemVote(body="bos", meeting_id="4690", agenda_item_id=1, agenda_item_number=1, motion_result="approved")
             session.add(aiv)
@@ -549,53 +508,6 @@ class TestInferredAbsenceDetection(unittest.TestCase):
             self.assertEqual(inferred[0].member_id, 2)
             self.assertEqual(inferred[0].attendance_status, "inferred_absent")
             self.assertEqual(inferred[0].inference_method, "missing_vote_when_others_voted")
-
-
-class TestCLIVoteCommands(unittest.TestCase):
-    """Test that inspect_db.py vote commands parse correctly."""
-
-    def test_parse_votes_summary(self):
-        """inspect_db.py votes MEETING_ID --body all"""
-        sys.argv = ["inspect_db.py", "votes", "4690", "--body", "all"]
-        from inspect_db import parse_args as ipa
-        args = ipa()
-        self.assertEqual(args.command, "votes")
-        self.assertEqual(args.meeting_id, "4690")
-
-    def test_parse_split_votes(self):
-        """inspect_db.py split-votes --body all"""
-        sys.argv = ["inspect_db.py", "split-votes", "--body", "all"]
-        from inspect_db import parse_args as ipa
-        args = ipa()
-        self.assertEqual(args.command, "split-votes")
-
-    def test_parse_dissent(self):
-        """inspect_db.py dissent --member NAME"""
-        sys.argv = ["inspect_db.py", "dissent", "--member", "Chairman Jack"]
-        from inspect_db import parse_args as ipa
-        args = ipa()
-        self.assertEqual(args.command, "dissent")
-
-    def test_parse_member_votes(self):
-        """inspect_db.py member-votes NAME"""
-        sys.argv = ["inspect_db.py", "member-votes", "Chairman Jack"]
-        from inspect_db import parse_args as ipa
-        args = ipa()
-        self.assertEqual(args.command, "member-votes")
-
-    def test_parse_executive_participants(self):
-        """inspect_db.py executive-participants"""
-        sys.argv = ["inspect_db.py", "executive-participants", "--body", "bos"]
-        from inspect_db import parse_args as ipa
-        args = ipa()
-        self.assertEqual(args.command, "executive-participants")
-
-    def test_parse_advisor(self):
-        """inspect_db.py advisor NAME"""
-        sys.argv = ["inspect_db.py", "advisor", "Kory Langhofer"]
-        from inspect_db import parse_args as ipa
-        args = ipa()
-        self.assertEqual(args.command, "advisor")
 
 
 if __name__ == "__main__":

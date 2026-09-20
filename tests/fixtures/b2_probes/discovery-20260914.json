@@ -1,0 +1,79 @@
+{
+  "kind": "kg-stage3-b2p1-source-evidence",
+  "probed_at": "2026-09-14T15:10:00Z",
+  "method": "bounded curl -L --max-time 25, one request per URL, no retries, no corpus fetch",
+  "adapters": [
+    {
+      "id": "A1-results-dam-family",
+      "source": "www.phoenix.gov /content/dam/phoenix/cityclerksite/publicmeetings/results/{yyyy}/{month}/{id}.pdf",
+      "role": "the retained evidence we already hold",
+      "binds_result_identity": true,
+      "binds_agenda_identity": false,
+      "probe": [
+        {"url": "https://www.phoenix.gov/content/dam/phoenix/cityclerksite/publicmeetings/results/2023/january/230117012r.pdf", "status": 200, "bytes": 132262},
+        {"url": "https://www.phoenix.gov/content/dam/phoenix/cityclerksite/publicmeetings/results/2026/may/260527002R.pdf", "status": 200, "bytes": 139422}
+      ],
+      "verdict": "reachable but results-only"
+    },
+    {
+      "id": "A2-agenda-family-substitution",
+      "source": "same DAM root with agendas/ packets/ agenda/ or bare path",
+      "role": "hypothesis: change the leaf directory",
+      "binds_result_identity": false,
+      "binds_agenda_identity": false,
+      "probe": [
+        {"url": ".../publicmeetings/agendas/2023/january/230117012r.pdf", "status": 404},
+        {"url": ".../publicmeetings/agendas/2023/january/230117012.pdf", "status": 404},
+        {"url": ".../publicmeetings/agenda/2023/january/230117012r.pdf", "status": 404},
+        {"url": ".../publicmeetings/packets/2023/january/230117012r.pdf", "status": 404},
+        {"url": ".../publicmeetings/2023/january/230117012r.pdf", "status": 404}
+      ],
+      "verdict": "every substitution 404 - NEVER promotable as proof"
+    },
+    {
+      "id": "A3-city-clerk-index",
+      "source": "www.phoenix.gov/administration/departments/cityclerk/programs-services/other-public-meetings(.html|/results.html)",
+      "role": "authoritative City Clerk index for these bodies",
+      "binds_result_identity": false,
+      "binds_agenda_identity": false,
+      "probe": [
+        {"url": ".../other-public-meetings.html", "status": 200, "bytes": 255398},
+        {"url": ".../other-public-meetings/results.html", "status": 200, "bytes": 255371},
+        {"url": ".../other-public-meetings/agendas.html", "status": 404}
+      ],
+      "verdict": "template shell - links are nav anchors only, no document listing, no agendas sibling"
+    },
+    {
+      "id": "A4-site-sitemap",
+      "source": "www.phoenix.gov/sitemap.xml",
+      "role": "published URL index",
+      "binds_result_identity": false,
+      "binds_agenda_identity": false,
+      "probe": [{"url": "https://www.phoenix.gov/sitemap.xml", "status": 200, "bytes": 578892}],
+      "verdict": "0 publicmeetings URLs indexed - the DAM path is not in the sitemap"
+    },
+    {
+      "id": "A5-destiny-agenda-publish",
+      "source": "public.destinyhosted.com/agenda_publish.cfm?id=<org_id>",
+      "role": "the platform family that publishes agendas and results",
+      "binds_result_identity": false,
+      "binds_agenda_identity": false,
+      "probe": [
+        {"url": "https://public.destinyhosted.com/agenda_publish.cfm", "status": 200, "bytes": 13740}
+      ],
+      "observed": "the index renders with an EMPTY org id (id=) and offers only month/year navigation; no org id is bound anywhere in the repository",
+      "verdict": "candidate platform, but no Phoenix org id and no meeting-level binding"
+    },
+    {
+      "id": "A6-legistar",
+      "source": "phoenix.legistar.com (Agenda/Attachment for other Phoenix meetings)",
+      "role": "a different Phoenix agenda platform",
+      "binds_result_identity": false,
+      "binds_agenda_identity": false,
+      "probe": [],
+      "observed": "0 of the 4,196 in-scope meetings carry a Legistar id or any cross-platform key",
+      "verdict": "no deterministic join exists"
+    }
+  ],
+  "conclusion": "no source explicitly binds the results-meeting identity to an agenda identity or URL; every substitution is 404"
+}

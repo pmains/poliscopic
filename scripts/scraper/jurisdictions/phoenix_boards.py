@@ -40,32 +40,32 @@ HEADERS = {
 BOARD_ID_TO_BODY_CODE: dict[int, str] = {
     55: "phoenix-pc",          # Planning Commission
     8: "phoenix-boa",          # Board of Adjustment
-    27: "phoenix-hp",          # Historic Preservation Commission
-    29: "phoenix-hs",          # Human Services Commission
-    28: "phoenix-hr",          # Human Relations Commission
-    22: "phoenix-eq",          # Environmental Quality & Sustainability Commission
-    36: "phoenix-di",          # Mayor's Commission on Disability Issues
-    53: "phoenix-wc",          # Phoenix Women's Commission
-    26: "phoenix-hc",          # Heritage Commission
-    34: "phoenix-la",          # License Appeals Board
-    57: "phoenix-fp",          # Fire Pension Board (PSPRS Local Fire)
-    73: "phoenix-pp",          # Police Pension Board (PSPRS Local Police)
-    84: "phoenix-cb",          # City of Phoenix Retirement Board (COPERS)
-    3: "phoenix-vpc",          # Ahwatukee Foothills Village Planning Committee
-    9: "phoenix-vpc",          # Camelback East Village Planning Committee
-    10: "phoenix-vpc",         # Central City Village Planning Committee
-    16: "phoenix-vpc",         # Deer Valley Village Planning Committee
-    17: "phoenix-vpc",         # Desert View Village Planning Committee
-    21: "phoenix-vpc",         # Encanto Village Planning Committee
-    23: "phoenix-vpc",         # Estrella Village Planning Committee
-    32: "phoenix-vpc",         # Laveen Village Planning Committee
-    35: "phoenix-vpc",         # Maryvale Village Planning Committee
-    39: "phoenix-vpc",         # North Gateway Village Planning Committee
-    40: "phoenix-vpc",         # North Mountain Village Planning Committee
-    42: "phoenix-vpc",         # Paradise Valley Village Planning Committee
-    59: "phoenix-vpc",         # Rio Vista Village Planning Committee
-    61: "phoenix-vpc",         # South Mountain Village Planning Committee
-    6: "phoenix-vpc",          # Alhambra Village Planning Committee
+    27: "phoenix-historic-preservation",          # Historic Preservation Commission
+    29: "phoenix-human-services",          # Human Services Commission
+    28: "phoenix-human-relations",          # Human Relations Commission
+    22: "phoenix-environmental-quality",          # Environmental Quality & Sustainability Commission
+    36: "phoenix-disability-issues",          # Mayor's Commission on Disability Issues
+    53: "phoenix-womens-commission",          # Phoenix Women's Commission
+    26: "phoenix-heritage-commission",          # Heritage Commission
+    34: "phoenix-license-appeal",          # License Appeals Board
+    57: "phoenix-fire-pension",          # Fire Pension Board (PSPRS Local Fire)
+    73: "phoenix-police-pension",          # Police Pension Board (PSPRS Local Police)
+    84: "phoenix-copers-board",          # City of Phoenix Retirement Board (COPERS)
+    3: "phoenix-village-planning",          # Ahwatukee Foothills Village Planning Committee
+    9: "phoenix-village-planning",          # Camelback East Village Planning Committee
+    10: "phoenix-village-planning",         # Central City Village Planning Committee
+    16: "phoenix-village-planning",         # Deer Valley Village Planning Committee
+    17: "phoenix-village-planning",         # Desert View Village Planning Committee
+    21: "phoenix-village-planning",         # Encanto Village Planning Committee
+    23: "phoenix-village-planning",         # Estrella Village Planning Committee
+    32: "phoenix-village-planning",         # Laveen Village Planning Committee
+    35: "phoenix-village-planning",         # Maryvale Village Planning Committee
+    39: "phoenix-village-planning",         # North Gateway Village Planning Committee
+    40: "phoenix-village-planning",         # North Mountain Village Planning Committee
+    42: "phoenix-village-planning",         # Paradise Valley Village Planning Committee
+    59: "phoenix-village-planning",         # Rio Vista Village Planning Committee
+    61: "phoenix-village-planning",         # South Mountain Village Planning Committee
+    6: "phoenix-village-planning",          # Alhambra Village Planning Committee
 }
 
 # Board names that map to shared slugs but are individually listed on boards.phoenix.gov

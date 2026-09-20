@@ -1,0 +1,141 @@
+{# Inline newsletter subscribe widget (macro).
+
+Renders the subscribe form with the standard controls (session CSRF token,
+honeypot, time-trap stamping via newsletter_widget_ctx()).
+
+Two modes:
+  mode="all"   — front-page sidebar.  "(All newsletters)" is checked by
+                 default and the per-digest list is COLLAPSED behind an
+                 expandable toggle, so the default view stays compact.
+                 Submitting with just "(All)" checked subscribes to all six
+                 (the server expands "All" server-side too, so no-JS
+                 submits are safe).  Picking specific digests unchecks
+                 "(All)".
+  mode="topic" — newsletter article pages.  A single pre-selected digest
+                 (hidden topic), no "(All)" master, no list.
+
+POSTs to /newsletter/subscribe, same endpoint as the landing page.
+#}
+{% macro subscribe_widget(mode="all", topic_slug=None, topic_label=None) %}
+  {% set ctx = newsletter_widget_ctx() %}
+  <form method="POST" action="/newsletter/subscribe" autocomplete="on"
+        class="newsletter-widget" id="newsletter-widget">
+    <input type="hidden" name="csrf_token" value="{{ ctx.csrf_token }}">
+    <!-- Honeypot: leave empty. -->
+    <div style="position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden;" aria-hidden="true">
+      <label for="{{ ctx.honeypot }}-w">Company website</label>
+      <input type="text" id="{{ ctx.honeypot }}-w" name="{{ ctx.honeypot }}" tabindex="-1" autocomplete="off">
+    </div>
+
+    <p class="small text-muted mb-2">Free weekly newsletters with the latest in local government</p>
+
+    <div class="mb-2">
+      <label class="visually-hidden" for="widget-email">Email address</label>
+      <input type="email" class="form-control form-control-sm" id="widget-email" name="email"
+             maxlength="320" required autocomplete="email"
+             placeholder="Enter your email...">
+    </div>
+
+    {% if mode == "all" %}
+    <div class="mb-1 small">
+      <div class="form-check">
+        <input class="form-check-input nwl-all" type="checkbox" value="All"
+               id="w-all" name="topics" checked>
+        <label class="form-check-label fw-semibold" for="w-all">All newsletters</label>
+      </div>
+
+      <button type="button" class="btn btn-sm btn-outline-secondary w-100 mt-1 nwl-toggle d-flex justify-content-between align-items-center"
+              data-bs-toggle="collapse" data-bs-target="#nwl-topic-list"
+              aria-expanded="false" aria-controls="nwl-topic-list">
+        <span class="nwl-toggle-label">Choose specific newsletters</span>
+        <i class="bi bi-chevron-right nwl-toggle-icon" aria-hidden="true"></i>
+      </button>
+
+      <div class="collapse mt-1" id="nwl-topic-list">
+        {% for slug, label in ctx.topics.items() %}
+        <div class="form-check">
+          <input class="form-check-input nwl-topic" type="checkbox" value="{{ slug }}"
+                 id="w-topic-{{ slug }}" name="topics" checked>
+          <label class="form-check-label text-muted" for="w-topic-{{ slug }}">{{ label }}</label>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="small text-danger d-none" id="nwl-need-topic">Choose at least one newsletter.</div>
+
+    <button type="submit" class="btn btn-primary btn-sm w-100 mt-2">Subscribe</button>
+    {% else %}
+    <input type="hidden" name="topics" value="{{ topic_slug }}">
+    <p class="small text-muted mb-2">
+      You'll get the <strong>{{ topic_label }}</strong> digest — manage or
+      unsubscribe anytime via the link in every email.
+    </p>
+    <button type="submit" class="btn btn-primary btn-sm w-100">Subscribe</button>
+    {% endif %}
+
+    <p class="small text-muted mt-2 mb-0">
+      By subscribing, you agree Poliscopic's <a href="/terms">Terms of Use</a> and
+      acknowledge its <a href="/privacy">Privacy Policy</a>.
+    </p>
+  </form>
+
+  {% if mode == "all" %}
+  <script>
+  (function () {
+    var form = document.getElementById("newsletter-widget");
+    if (!form) return;
+    var master = form.querySelector(".nwl-all");
+    var boxes = Array.prototype.slice.call(form.querySelectorAll(".nwl-topic"));
+    var needTopic = form.querySelector("#nwl-need-topic");
+    var toggle = form.querySelector(".nwl-toggle");
+    var icon = form.querySelector(".nwl-toggle-icon");
+    var label = form.querySelector(".nwl-toggle-label");
+    var shown = false;
+
+    function setShown(s) {
+      shown = s;
+      if (icon) {
+        icon.classList.toggle("bi-chevron-down", s);
+        icon.classList.toggle("bi-chevron-right", !s);
+      }
+      if (toggle) toggle.setAttribute("aria-expanded", s ? "true" : "false");
+    }
+    function syncFromMaster() {
+      boxes.forEach(function (b) { b.checked = master.checked; });
+      if (needTopic) needTopic.classList.add("d-none");
+    }
+    function syncMaster() {
+      var all = boxes.length > 0 && boxes.every(function (b) { return b.checked; });
+      master.checked = all;
+    }
+    master.addEventListener("change", syncFromMaster);
+    boxes.forEach(function (b) {
+      b.addEventListener("change", function () {
+        if (master.checked && !b.checked) master.checked = false;  // custom pick
+        syncMaster();
+        if (needTopic) needTopic.classList.add("d-none");
+      });
+    });
+    if (toggle && window.bootstrap) {
+      toggle.addEventListener("click", function () {
+        var collapse = bootstrap.Collapse.getOrCreateInstance(
+          document.getElementById("nwl-topic-list"),
+          { toggle: false });
+        if (shown) { collapse.hide(); } else { collapse.show(); }
+      });
+      document.getElementById("nwl-topic-list")
+        .addEventListener("shown.bs.collapse", function () { setShown(true); });
+      document.getElementById("nwl-topic-list")
+        .addEventListener("hidden.bs.collapse", function () { setShown(false); });
+    }
+    form.addEventListener("submit", function (e) {
+      var any = master.checked || boxes.some(function (b) { return b.checked; });
+      if (!any) {
+        e.preventDefault();
+        if (needTopic) needTopic.classList.remove("d-none");
+      }
+    });
+  })();
+  </script>
+  {% endif %}
+{% endmacro %}

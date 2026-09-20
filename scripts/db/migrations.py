@@ -95,20 +95,19 @@ def init_db() -> None:
     backfill_multi_jurisdiction_columns(engine)
 
     # Body column migrations (for body-scoped identity)
+    #
+    # NOTE: `_body_backfilled` is deliberately NOT created here.  Brief 032:
+    # creating it on every initialization and dropping it again in
+    # backfill_body_column() burned one permanent attribute slot per process
+    # start on each of seven tables, because PostgreSQL never reuses dropped
+    # attribute numbers.  Completion is now tracked in `_migration_ledger`.
     _migrate_col(engine, "meetings", "body", "VARCHAR(16) NOT NULL DEFAULT ''")
-    _migrate_col(engine, "meetings", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
     _migrate_col(engine, "agenda_items", "body", "VARCHAR(16) NOT NULL DEFAULT ''")
-    _migrate_col(engine, "agenda_items", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
     _migrate_col(engine, "supporting_documents", "body", "VARCHAR(16) NOT NULL DEFAULT ''")
-    _migrate_col(engine, "supporting_documents", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
     _migrate_col(engine, "case_events", "body", "VARCHAR(16) NOT NULL DEFAULT ''")
-    _migrate_col(engine, "case_events", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
     _migrate_col(engine, "meeting_members", "body", "VARCHAR(16) NOT NULL DEFAULT ''")
-    _migrate_col(engine, "meeting_members", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
     _migrate_col(engine, "agenda_item_votes", "body", "VARCHAR(16) NOT NULL DEFAULT ''")
-    _migrate_col(engine, "agenda_item_votes", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
     _migrate_col(engine, "pz_item_details", "body", "VARCHAR(16) NOT NULL DEFAULT ''")
-    _migrate_col(engine, "pz_item_details", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT 0")
 
     # Create additional indexes for common query patterns
     _ensure_index(engine, "meetings", "idx_meetings_date_desc", "meeting_date DESC")
@@ -247,99 +246,270 @@ def backfill_multi_jurisdiction_columns(engine: Engine) -> None:
 
         conn.commit()
 
-def backfill_body_column(engine: Engine) -> None:
-    """Backfill body column for existing records.
+# ── Body backfill (Brief 032) ────────────────────────────────────────────
+#
+# This backfill used to MIGRATE by ADDing a transient `_body_backfilled`
+# marker, using it, then DROPping it — on every process start.  PostgreSQL
+# never reuses dropped attribute numbers, so each start burned one permanent
+# attribute slot on each of seven tables (1,569 slots lost per table before
+# this was found).
+#
+# Completion is now recorded once in `_migration_ledger`, and the need for
+# work is decided by a read-only DATA predicate.  A routine startup on an
+# already-backfilled database performs no ADD/DROP at all.
 
-    - All meetings with meeting_type != 'Planning & Zoning' get body='bos'
-    - All meetings with meeting_type == 'Planning & Zoning' get body='pz'
-    - Related tables (agenda_items, supporting_documents, etc.) are updated
-      to match their meeting's body value.
-    - Uses _body_backfilled flag as a migration marker.
+BODY_BACKFILL_VERSION = "body_backfill_v1"
+
+LEDGER_TABLE = "_migration_ledger"
+
+# Fixed advisory-lock id used to serialise concurrent startup (Brief 032
+# review finding 3).  Arbitrary but stable; it must never change.
+BODY_BACKFILL_LOCK_ID = 815_032_001
+
+BACKFILL_TABLES = (
+    "meetings",
+    "agenda_items",
+    "supporting_documents",
+    "case_events",
+    "meeting_members",
+    "agenda_item_votes",
+    "pz_item_details",
+)
+
+SUPPORTED_DIALECTS = ("postgresql", "sqlite")
+
+
+class SchemaNotReadyError(RuntimeError):
+    """Expected schema is not ready for the body backfill.
+
+    Raised rather than marking completion, so an incomplete schema can never
+    permanently suppress the work (Brief 032 review finding 2).
     """
-    # Ensure marker column exists using safe approach (PostgreSQL-compatible)
-    _add_col_safe(engine, "meetings", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT false")
-    _add_col_safe(engine, "agenda_items", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT false")
-    _add_col_safe(engine, "supporting_documents", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT false")
-    _add_col_safe(engine, "case_events", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT false")
-    _add_col_safe(engine, "meeting_members", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT false")
-    _add_col_safe(engine, "agenda_item_votes", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT false")
-    _add_col_safe(engine, "pz_item_details", "_body_backfilled", "BOOLEAN NOT NULL DEFAULT false")
 
-    inspector = sa_inspect(engine)
 
-    tables_to_backfill = [
-        "meetings", "agenda_items", "supporting_documents",
-        "case_events", "meeting_members", "agenda_item_votes", "pz_item_details",
-    ]
+def ledger_key(table: str) -> str:
+    """Per-table ledger key.
 
+    A single global key would mark completion even when a table was absent or
+    incomplete at the time, permanently suppressing its later backfill.  One key
+    per table keeps each table's progress independent (finding 2).
+    """
+    return f"{BODY_BACKFILL_VERSION}:{table}"
+
+
+def _require_supported_dialect(engine: Engine) -> str:
+    """Fail loudly on an unsupported dialect rather than diverge silently."""
+    dialect = engine.dialect.name
+    if dialect not in SUPPORTED_DIALECTS:
+        raise RuntimeError(
+            f"backfill_body_column: unsupported dialect {dialect!r}; "
+            f"supported: {SUPPORTED_DIALECTS}")
+    return dialect
+
+
+def ledger_ensure(engine: Engine) -> None:
+    """Create the migration ledger if absent. Idempotent; no column churn."""
+    with engine.begin() as conn:
+        conn.execute(text(
+            f"CREATE TABLE IF NOT EXISTS {LEDGER_TABLE} ("
+            " name VARCHAR(128) PRIMARY KEY,"
+            " applied_at TIMESTAMP NOT NULL)"
+        ))
+
+
+def _ledger_done(conn, name: str) -> bool:
+    """True if a named migration is recorded, using an existing connection."""
+    return conn.execute(
+        text(f"SELECT 1 FROM {LEDGER_TABLE} WHERE name = :n"),
+        {"n": name}).first() is not None
+
+
+def ledger_has(engine: Engine, name: str) -> bool:
+    """True if a named migration is recorded as applied."""
+    ledger_ensure(engine)
     with engine.connect() as conn:
-        for table in tables_to_backfill:
-            existing_cols = {c["name"] for c in inspector.get_columns(table)}
-            if "body" not in existing_cols or "_body_backfilled" not in existing_cols:
-                continue
+        return _ledger_done(conn, name)
 
-            # Check if already backfilled
-            row = conn.execute(
-                text(f"SELECT COUNT(*) FROM {table} WHERE _body_backfilled IS false")
-            ).scalar()
-            if not row or row == 0:
-                # Already backfilled — skip, don't drop the column (it's needed
-                # by the queries below, and the final cleanup loop handles removal)
-                continue
 
-        # Backfill meetings body column
-        if "meetings" in inspector.get_table_names():
-            existing_cols = {c["name"] for c in inspector.get_columns("meetings")}
-            if "body" in existing_cols and "_body_backfilled" in existing_cols:
-                try:
-                    conn.execute(
-                        text("UPDATE meetings SET body = 'bos' WHERE (body IS NULL OR body = '') AND meeting_type != 'Planning & Zoning' AND _body_backfilled IS false")
-                    )
-                    conn.execute(
-                        text("UPDATE meetings SET body = 'pz' WHERE (body IS NULL OR body = '') AND meeting_type = 'Planning & Zoning' AND _body_backfilled IS false")
-                    )
-                    conn.execute(text("UPDATE meetings SET _body_backfilled = true WHERE body IS NOT NULL AND body != ''"))
-                    conn.commit()
-                except Exception as e:
-                    log.warning(f"  body backfill skipped (meetings): {e}")
-                    conn.rollback()
+def _ledger_insert(conn, engine: Engine, name: str) -> None:
+    """Record a migration, atomically, per dialect (finding 3).
 
-            # Backfill related tables by joining to meetings
-            for table in ["agenda_items", "supporting_documents", "case_events", "meeting_members", "agenda_item_votes", "pz_item_details"]:
-                if table not in inspector.get_table_names():
+    PostgreSQL races on the primary key, so it needs ON CONFLICT DO NOTHING.
+    SQLite serialises writers and uses INSERT OR IGNORE.  Any other dialect is
+    refused rather than silently guessed at.
+    """
+    dialect = engine.dialect.name
+    if dialect == "postgresql":
+        conn.execute(text(
+            f"INSERT INTO {LEDGER_TABLE} (name, applied_at) "
+            "VALUES (:n, CURRENT_TIMESTAMP) ON CONFLICT (name) DO NOTHING"),
+            {"n": name})
+    elif dialect == "sqlite":
+        conn.execute(text(
+            f"INSERT OR IGNORE INTO {LEDGER_TABLE} (name, applied_at) "
+            "VALUES (:n, CURRENT_TIMESTAMP)"), {"n": name})
+    else:
+        raise RuntimeError(
+            f"_ledger_insert: unsupported dialect {dialect!r}")
+
+
+def ledger_mark(engine: Engine, name: str) -> None:
+    """Record a completed migration. Idempotent."""
+    ledger_ensure(engine)
+    with engine.begin() as conn:
+        _ledger_insert(conn, engine, name)
+
+
+def _acquire_lock(engine: Engine):
+    """Serialise concurrent startup. Returns a token for _release_lock.
+
+    PostgreSQL takes a session-level advisory lock so two processes cannot
+    backfill and mark simultaneously.  SQLite serialises writers at the database
+    level and its `engine.begin()` transaction takes the write lock, so there is
+    no separate primitive to acquire; this is stated explicitly rather than
+    left implicit.
+
+    If acquisition itself fails the connection is closed before re-raising, so a
+    failed lock cannot leak a pooled connection (Brief 032 re-review finding 2).
+    """
+    if engine.dialect.name == "postgresql":
+        conn = engine.connect()
+        try:
+            conn.execute(text("SELECT pg_advisory_lock(:k)"),
+                         {"k": BODY_BACKFILL_LOCK_ID})
+        except Exception:
+            conn.close()
+            raise
+        return conn
+    return None
+
+
+def _release_lock(engine: Engine, token) -> None:
+    if token is None:
+        return
+    try:
+        token.execute(text("SELECT pg_advisory_unlock(:k)"),
+                      {"k": BODY_BACKFILL_LOCK_ID})
+    finally:
+        token.close()
+
+
+def schema_readiness(inspector) -> tuple[dict[str, set[str]], list[str]]:
+    """Return (columns_by_present_table, present_tables_missing_body).
+
+    Absent tables are not an error — `init_db()` may still be creating them —
+    but they are also never marked complete, so their backfill still happens
+    when they appear.
+    """
+    names = set(inspector.get_table_names())
+    columns: dict[str, set[str]] = {}
+    incomplete: list[str] = []
+    for table in BACKFILL_TABLES:
+        if table not in names:
+            continue
+        cols = {c["name"] for c in inspector.get_columns(table)}
+        columns[table] = cols
+        if "body" not in cols:
+            incomplete.append(table)
+    return columns, incomplete
+
+
+def pending_backfill_tables(engine: Engine) -> list[str]:
+    """Tables that exist, carry `body`, and are not yet marked complete."""
+    _require_supported_dialect(engine)
+    ledger_ensure(engine)
+    inspector = sa_inspect(engine)
+    columns, incomplete = schema_readiness(inspector)
+    if incomplete:
+        raise SchemaNotReadyError(
+            f"expected table(s) missing 'body': {incomplete}")
+    with engine.connect() as conn:
+        return [t for t in BACKFILL_TABLES
+                if t in columns and not _ledger_done(conn, ledger_key(t))]
+
+
+def backfill_body_column(engine: Engine) -> None:
+    """Populate `body` for legacy rows. Idempotent and DDL-free once complete.
+
+    Semantics (Brief 032 review finding 1):
+      - a meeting with a missing/empty body becomes 'pz' when
+        meeting_type = 'Planning & Zoning', otherwise 'bos' — including when
+        meeting_type IS NULL;
+      - a child inherits its meeting's body via NULLIF(parent.body, '') so an
+        empty parent value becomes NULL and then falls back to 'bos';
+      - a non-empty body is never overwritten.
+
+    Completion is recorded PER TABLE, and only after a postcondition asserted
+    **inside the same transaction** proves no expected table still has a
+    NULL/empty body.  A failure therefore rolls back both data and ledger and
+    stays retryable.
+    """
+    _require_supported_dialect(engine)
+
+    # Acquire the lock BEFORE ledger_ensure().  Its CREATE TABLE IF NOT EXISTS
+    # must not race between two first-startup processes (Brief 032 re-review
+    # finding 1).  The same lock is held through schema readiness, the backfill
+    # DML, the postcondition, and the ledger writes; it is released in finally.
+    lock = _acquire_lock(engine)
+    try:
+        ledger_ensure(engine)
+
+        inspector = sa_inspect(engine)
+        columns, incomplete = schema_readiness(inspector)
+        if incomplete:
+            raise SchemaNotReadyError(
+                "refusing: expected table(s) present but missing 'body': "
+                f"{incomplete}; schema is not ready for the body backfill")
+
+        with engine.connect() as conn:
+            pending = [t for t in BACKFILL_TABLES
+                       if t in columns and not _ledger_done(conn, ledger_key(t))]
+        if not pending:
+            return  # nothing outstanding: no DDL, no DML
+
+        has_meetings = "meetings" in columns
+
+        with engine.begin() as conn:
+            if "meetings" in pending:
+                conn.execute(text(
+                    "UPDATE meetings SET body = "
+                    "CASE WHEN meeting_type = 'Planning & Zoning' "
+                    "     THEN 'pz' ELSE 'bos' END "
+                    "WHERE body IS NULL OR body = ''"))
+
+            for table in pending:
+                if table == "meetings":
                     continue
-                existing_cols = {c["name"] for c in inspector.get_columns(table)}
-                if "body" not in existing_cols or "_body_backfilled" not in existing_cols:
-                    continue
+                if has_meetings and "meeting_id" in columns[table]:
+                    conn.execute(text(
+                        f"UPDATE {table} SET body = COALESCE(NULLIF(("
+                        f"  SELECT m.body FROM meetings m"
+                        f"  WHERE m.meeting_id = {table}.meeting_id LIMIT 1"
+                        f"), ''), 'bos') WHERE body IS NULL OR body = ''"))
+                else:
+                    conn.execute(text(
+                        f"UPDATE {table} SET body = 'bos' "
+                        "WHERE body IS NULL OR body = ''"))
 
-                try:
-                    conn.execute(
-                        text(f"""
-                            UPDATE {table}
-                            SET body = (
-                                SELECT COALESCE(m.body, 'bos')
-                                FROM meetings m
-                                WHERE m.meeting_id = {table}.meeting_id
-                                LIMIT 1
-                            ),
-                            _body_backfilled = true
-                            WHERE (body IS NULL OR body = '')
-                              AND _body_backfilled IS false
-                        """)
-                    )
-                except Exception:
-                    conn.execute(
-                        text(f"UPDATE {table} SET body = 'bos', _body_backfilled = true WHERE (body IS NULL OR body = '') AND _body_backfilled IS false")
-                    )
-                conn.commit()
+            # POSTCONDITION, inside the transaction: nothing may be left
+            # unresolved before any completion is recorded (finding 1).
+            unresolved = {}
+            for table in pending:
+                n = conn.execute(text(
+                    f"SELECT COUNT(*) FROM {table} "
+                    "WHERE body IS NULL OR body = ''")).scalar() or 0
+                if n:
+                    unresolved[table] = int(n)
+            if unresolved:
+                raise RuntimeError(
+                    "refusing: body backfill left unresolved rows: "
+                    f"{unresolved}")
 
-            # Drop the marker columns
-            for table in tables_to_backfill:
-                try:
-                    conn.execute(text(f"ALTER TABLE {table} DROP COLUMN _body_backfilled"))
-                except Exception:
-                    pass
-            conn.commit()
+            for table in pending:
+                _ledger_insert(conn, engine, ledger_key(table))
+    finally:
+        _release_lock(engine, lock)
+
 
 def _migrate_meeting_members_table() -> None:
     """Migrate meeting_supervisors → meeting_members if the old table exists.
@@ -776,7 +946,7 @@ def seed_default_jurisdictions() -> None:
                 jurisdiction_id=phoenix.id,
                 name="Phoenix Village Planning Committees",
                 slug="phoenix-village-planning",
-                body_code="phoenix-vpc",
+                body_code="phoenix-village-planning",
                 body_type="Committee",
             ),
         ]
@@ -796,84 +966,84 @@ def seed_default_jurisdictions() -> None:
                 jurisdiction_id=phoenix.id,
                 name="Phoenix Historic Preservation Commission",
                 slug="phoenix-historic-preservation",
-                body_code="phoenix-hp",
+                body_code="phoenix-historic-preservation",
                 body_type="Commission",
             ),
             PublicBody(
                 jurisdiction_id=phoenix.id,
                 name="Phoenix Zoning Adjustment",
                 slug="phoenix-zoning-adjustment",
-                body_code="phoenix-za",
+                body_code="phoenix-zoning-adjustment",
                 body_type="Board",
             ),
             PublicBody(
                 jurisdiction_id=phoenix.id,
                 name="Phoenix Human Services Commission",
                 slug="phoenix-human-services",
-                body_code="phoenix-hs",
+                body_code="phoenix-human-services",
                 body_type="Commission",
             ),
             PublicBody(
                 jurisdiction_id=phoenix.id,
                 name="Phoenix Human Relations Commission",
                 slug="phoenix-human-relations",
-                body_code="phoenix-hr",
+                body_code="phoenix-human-relations",
                 body_type="Commission",
             ),
             PublicBody(
                 jurisdiction_id=phoenix.id,
                 name="Phoenix Environmental Quality & Sustainability Commission",
                 slug="phoenix-environmental-quality",
-                body_code="phoenix-eq",
+                body_code="phoenix-environmental-quality",
                 body_type="Commission",
             ),
             PublicBody(
                 jurisdiction_id=phoenix.id,
                 name="Phoenix Mayor's Commission on Disability Issues",
                 slug="phoenix-disability-issues",
-                body_code="phoenix-di",
+                body_code="phoenix-disability-issues",
                 body_type="Commission",
             ),
             PublicBody(
                 jurisdiction_id=phoenix.id,
                 name="Phoenix Women's Commission",
                 slug="phoenix-womens-commission",
-                body_code="phoenix-wc",
+                body_code="phoenix-womens-commission",
                 body_type="Commission",
             ),
             PublicBody(
                 jurisdiction_id=phoenix.id,
                 name="Phoenix Heritage Commission",
                 slug="phoenix-heritage-commission",
-                body_code="phoenix-hc",
+                body_code="phoenix-heritage-commission",
                 body_type="Commission",
             ),
             PublicBody(
                 jurisdiction_id=phoenix.id,
                 name="Phoenix License Appeal Board",
                 slug="phoenix-license-appeal",
-                body_code="phoenix-la",
+                body_code="phoenix-license-appeal",
                 body_type="Board",
             ),
             PublicBody(
                 jurisdiction_id=phoenix.id,
                 name="Phoenix Fire Pension Board",
                 slug="phoenix-fire-pension",
-                body_code="phoenix-fp",
+                body_code="phoenix-fire-pension",
                 body_type="Board",
             ),
             PublicBody(
                 jurisdiction_id=phoenix.id,
                 name="Phoenix Police Pension Board",
                 slug="phoenix-police-pension",
-                body_code="phoenix-pp",
+                body_code="phoenix-police-pension",
                 body_type="Board",
             ),
             PublicBody(
                 jurisdiction_id=phoenix.id,
                 name="Phoenix City of Phoenix Employees' Retirement System Board",
                 slug="phoenix-copers-board",
-                body_code="phoenix-cb",
+                body_code="phoenix-copers-board",
                 body_type="Board",
             ),
         ]
@@ -901,7 +1071,7 @@ def seed_default_jurisdictions() -> None:
                 jurisdiction_id=mesa.id,
                 name="Mesa City Council",
                 slug="mesa-city-council",
-                body_code="mesa-cc",
+                body_code="mesa-city-council",
                 body_type="Council",
                 website_url="https://www.mesaaz.gov/Government/City-Council-Meetings",
             ),
@@ -916,21 +1086,21 @@ def seed_default_jurisdictions() -> None:
                 jurisdiction_id=mesa.id,
                 name="Mesa Design Review Board",
                 slug="mesa-design-review-board",
-                body_code="mesa-drb",
+                body_code="mesa-design-review-board",
                 body_type="Board",
             ),
             PublicBody(
                 jurisdiction_id=mesa.id,
                 name="Mesa Board of Adjustment",
                 slug="mesa-board-of-adjustment",
-                body_code="mesa-boa",
+                body_code="mesa-board-of-adjustment",
                 body_type="Board",
             ),
             PublicBody(
                 jurisdiction_id=mesa.id,
                 name="Mesa Historic Preservation Board",
                 slug="mesa-historic-preservation-board",
-                body_code="mesa-hpb",
+                body_code="mesa-historic-preservation-board",
                 body_type="Board",
             ),
             PublicBody(

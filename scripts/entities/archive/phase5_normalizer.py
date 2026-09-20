@@ -7,9 +7,16 @@ meeting_event_extractions, maps action_verb to canonical event_type + outcome,
 looks up meeting context from supporting_documents, and writes meeting_events.
 
 Usage:
-    PYTHONPATH=scripts python3 scripts/entities/phase5_normalizer.py
     PYTHONPATH=scripts python3 scripts/entities/phase5_normalizer.py --dry-run
-    PYTHONPATH=scripts python3 scripts/entities/phase5_normalizer.py --limit 1000
+    POLISCOPIC_ALLOW_SUPERSEDED_PHASE5_NORMALIZER=1 \\
+        PYTHONPATH=scripts python3 scripts/entities/phase5_normalizer.py
+
+SUPERSEDED (2026-09-11).  This normalizer paired each extraction with a generated
+``meeting_events`` id **by position** (``zip(rows, event_ids)``), so a candidate
+that was skipped shifted every later pair.  That is how extraction ids
+24195-24606 were mislinked.  It is retained for forensic inspection only: a live
+run is refused unless ``POLISCOPIC_ALLOW_SUPERSEDED_PHASE5_NORMALIZER=1`` is set.
+Use ``scripts/entities/event_normalize.py`` for real work.
 """
 
 import logging
@@ -17,6 +24,7 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
+from typing import Sequence
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "scripts"))
 from db import get_engine
@@ -26,6 +34,60 @@ log = logging.getLogger("phase5_normalizer")
 
 BATCH_SIZE = 500
 NORMALIZER_VERSION = "2026-07-27.1"
+
+#: Explicit opt-in required before this retired normalizer may write anything.
+SUPERSEDED_ENV = "POLISCOPIC_ALLOW_SUPERSEDED_PHASE5_NORMALIZER"
+
+
+class PairingCardinalityError(RuntimeError):
+    """Extraction candidates and inserted event ids cannot be paired one-to-one."""
+
+
+class PairingOrderError(RuntimeError):
+    """Inserted event ids do not follow the order the candidates were submitted in."""
+
+
+def assert_superseded_execution_allowed() -> None:
+    """Refuse a live run of this retired normalizer without an explicit override."""
+    if os.environ.get(SUPERSEDED_ENV) != "1":
+        raise RuntimeError(
+            "phase5_normalizer is superseded: its positional pairing mislinked "
+            "meeting_event_extractions rows 24195-24606. Use "
+            "scripts/entities/event_normalize.py. Set "
+            f"{SUPERSEDED_ENV}=1 only for forensic inspection."
+        )
+
+
+def pair_events_with_extractions(
+    extraction_ids: Sequence[int],
+    event_ids: Sequence[int],
+) -> list[tuple[int, int]]:
+    """Pair each extraction id with the event id created for it.
+
+    The sequences are paired positionally *only* after proving they describe the
+    same batch: equal length, no duplicates on either side, and strictly
+    increasing event ids.  Any mismatch raises instead of shifting every later
+    pair, which is the defect that mislinked extraction ids 24195-24606.
+    """
+    if len(extraction_ids) != len(event_ids):
+        raise PairingCardinalityError(
+            f"{len(extraction_ids)} extraction candidate(s) but "
+            f"{len(event_ids)} inserted event id(s); refusing to pair by position"
+        )
+    if len(set(extraction_ids)) != len(extraction_ids):
+        raise PairingCardinalityError(
+            "duplicate extraction ids in batch; refusing to pair by position"
+        )
+    if len(set(event_ids)) != len(event_ids):
+        raise PairingCardinalityError(
+            "duplicate event ids returned by insert; refusing to pair by position"
+        )
+    if any(later <= earlier for earlier, later in zip(event_ids, event_ids[1:])):
+        raise PairingOrderError(
+            "inserted event ids are not strictly increasing; the batch was "
+            "reordered, so positional pairing would mislink"
+        )
+    return [(int(ext), int(eid)) for ext, eid in zip(extraction_ids, event_ids)]
 
 # ── Action verb → event_type / outcome mapping ─────────────────────────
 # Maps the extractor's outcome (lowered action_verb) to canonical values.
@@ -105,6 +167,8 @@ def resolve_event_type_id(conn, verb: str) -> int | None:
 
 def normalize(engine, limit: int = None, dry_run: bool = False) -> dict:
     """Read unprocessed extractions and write canonical meeting_events."""
+    if not dry_run:
+        assert_superseded_execution_allowed()
     stats = {"extractions": 0, "events": 0, "skipped": 0, "errors": 0}
     done = False
 
@@ -138,7 +202,7 @@ def normalize(engine, limit: int = None, dry_run: bool = False) -> dict:
 
         # Build batch of events to insert
         batch_event_rows = []
-        batch_extraction_updates = []  # (extraction_id, event_id) pairs
+        batch_extraction_ids = []  # extraction id per candidate, in insert order
 
         for row in rows:
             ext_id = int(row[0])
@@ -178,6 +242,7 @@ def normalize(engine, limit: int = None, dry_run: bool = False) -> dict:
                 offset_end,
                 case_no,
             ))
+            batch_extraction_ids.append(ext_id)
             stats["extractions"] += 1
 
         if not batch_event_rows:
@@ -215,15 +280,12 @@ def normalize(engine, limit: int = None, dry_run: bool = False) -> dict:
                 # Collect generated event IDs
                 event_ids = [r[0] for r in result]
 
-                # Update extractions to point at events
-                for ext_id in set(int(r[0]) for r in rows):
-                    # Match extracted IDs to generated event IDs
-                    pass
-
-                # Actually, simpler: update each extraction's meeting_event_id
-                update_values = []
-                for (m_row, eid) in zip(rows, event_ids):
-                    update_values.append((int(eid), int(m_row[0])))
+                # Pair each extraction with the event created for it, keyed by the
+                # extraction id.  A shortened insert result, a skipped candidate, or
+                # a reordered batch raises here instead of silently shifting every
+                # later pair (the defect at extraction ids 24195-24606).
+                pairs = pair_events_with_extractions(batch_extraction_ids, event_ids)
+                update_values = [(eid, ext) for ext, eid in pairs]
 
                 if update_values:
                     execute_values(
@@ -257,6 +319,9 @@ def main():
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--limit", type=int, default=None)
     args = parser.parse_args()
+
+    if not args.dry_run:
+        assert_superseded_execution_allowed()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 

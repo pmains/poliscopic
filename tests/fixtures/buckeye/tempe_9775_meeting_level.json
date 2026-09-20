@@ -1,0 +1,15 @@
+{
+  "_note": "Tempe meeting 9775 (tempe-mobility-safety-subcommittee, 2026-06-02). Two Agenda/Minutes attachment rows carry a stray item number '1' and the placeholder source key '0'. Neither is an item reference.",
+  "meeting_db_id": 9775,
+  "body": "tempe-mobility-safety-subcommittee",
+  "granicus_meeting_id": "tempe-mobility-safety-subcommittee-2026-06-02",
+  "references": [
+    {"document_id": 46970, "meeting_db_id": 9775, "body": "tempe-mobility-safety-subcommittee",
+     "source_key": "0", "item_number": "1", "title": "Agenda: 6.2.26 Agenda"},
+    {"document_id": 46971, "meeting_db_id": 9775, "body": "tempe-mobility-safety-subcommittee",
+     "source_key": "0", "item_number": "1", "title": "Minutes: 6.2.26 Agenda"}
+  ],
+  "canonical_numbers": [],
+  "expected_class": "meeting_level_only",
+  "expected_held": 0
+}

@@ -21,6 +21,7 @@ from db.meeting_utils import (
     normalize_meeting_type, extract_meeting_context,
     extract_meeting_body, build_meeting_display_name,
 )
+from db.meeting_members import AttendanceRecord, reconcile_meeting_members
 
 # ── Name validation safeguard for persist_votes ──
 # Known first names extracted from existing Person records in our database.
@@ -544,7 +545,7 @@ def persist_meeting(
             # meetings.
             existing = session.execute(
                 select(SupportingDocument.id).where(
-                    SupportingDocument.agenda_item_id == doc_dict.get("agenda_item_id", "0"),
+                    SupportingDocument.agenda_item_id == str(doc_dict.get("agenda_item_id", "0")),
                     SupportingDocument.document_url == doc_dict.get("document_url", ""),
                 )
             ).scalar_one_or_none()
@@ -678,6 +679,23 @@ def _upsert_case_and_event(
     session.add(event)
     return case
 
+def _meeting_date_is_today_or_future(date_str: Optional[str]) -> bool:
+    """True if an ISO-format meeting date is today or in the future.
+
+    Used to decide whether a 0-item meeting is merely waiting for its agenda
+    to be published (pending) or is genuinely done (complete).
+    """
+    if not date_str:
+        return False
+    s = str(date_str).strip()
+    today = datetime.now(timezone.utc).date()
+    try:
+        return datetime.fromisoformat(s).date() >= today
+    except (ValueError, TypeError):
+        # Non-ISO/parseable date — fall back to lexical compare, else conservative
+        return s >= today.isoformat()
+
+
 def replace_meeting_data_safe(
     session: Session,
     body: str,
@@ -746,18 +764,37 @@ def replace_meeting_data_safe(
 
         doc_count = len(supporting_doc_dicts) if supporting_doc_dicts else 0
 
-        update_sync_status(
-            session,
-            body,
-            meeting_id,
-            "complete",
-            item_count_expected=meeting.item_count_expected or len(agenda_item_dicts),
-            item_count_actual=len(agenda_item_dicts),
-            supporting_doc_count=doc_count,
-            items_extracted=True,
-            supporting_docs_extracted=bool(supporting_doc_dicts),
-            error=None,
-        )
+        # Brief 006: a future-dated meeting with 0 agenda items isn't
+        # "complete" — its agenda simply hasn't been published yet (rows are
+        # created weeks early from the calendar). Mark it pending so the
+        # normal daily sync path re-fetches it once the agenda drops. Past
+        # meetings with 0 items keep "complete" (behavior unchanged).
+        if not agenda_item_dicts and _meeting_date_is_today_or_future(meeting.meeting_date):
+            update_sync_status(
+                session,
+                body,
+                meeting_id,
+                "pending",
+                item_count_expected=meeting.item_count_expected or 0,
+                item_count_actual=0,
+                supporting_doc_count=doc_count,
+                items_extracted=False,
+                supporting_docs_extracted=bool(supporting_doc_dicts),
+                error="Agenda not yet published",
+            )
+        else:
+            update_sync_status(
+                session,
+                body,
+                meeting_id,
+                "complete",
+                item_count_expected=meeting.item_count_expected or len(agenda_item_dicts),
+                item_count_actual=len(agenda_item_dicts),
+                supporting_doc_count=doc_count,
+                items_extracted=True,
+                supporting_docs_extracted=bool(supporting_doc_dicts),
+                error=None,
+            )
         session.commit()
         return persisted
 
@@ -922,9 +959,8 @@ def persist_votes(
     records for a meeting.
 
     1. Upsert supervisor records (by normalized_name).
-    2. Delete existing meeting_members, agenda_item_votes, member_votes
-       for this meeting_id.
-    3. Insert new records.
+    2. Update or insert meeting_members by their stable meeting/member key.
+    3. Replace agenda_item_votes and member_votes for this meeting_id.
     4. Commit transactionally.
 
     Returns the number of vote records persisted.
@@ -985,17 +1021,11 @@ def persist_votes(
             if membership and role:
                 membership.role = role
 
-    # 2. Delete existing records for this meeting (body-scoped)
-    # Use no_autoflush to prevent stale pending objects from a previous
+    # 2. Load vote rows before replacing them. Use no_autoflush to prevent
+    # stale pending objects from a previous
     # failed call from being re-inserted by query-invoked autoflush, which
     # would collide with the fresh inserts below.
     with session.no_autoflush:
-        session.execute(
-            MeetingMember.__table__.delete().where(
-                MeetingMember.body == body,
-                MeetingMember.meeting_id == meeting_id,
-            )
-        )
         existing_aiv_rows = session.execute(
             select(AgendaItemVote).where(
                 AgendaItemVote.body == body,
@@ -1020,21 +1050,25 @@ def persist_votes(
     # from within an active transaction (e.g. PZ sync loop).
     vote_count = 0
 
-    # 3. Insert meeting_member records
+    # 3. Reconcile current attendance without changing existing row IDs.
+    attendance_records: list[AttendanceRecord] = []
     for sup in supervisors:
         norm = sup.get("normalized_name", sup.get("name", "").lower().strip())
         sup_id = supervisor_map.get(norm)
         if sup_id is None:
             continue
-        mm = MeetingMember(
-            body=body,
-            meeting_id=meeting_id,
-            meeting_db_id=meeting_db_id_val,
+        attendance_records.append(AttendanceRecord(
             member_id=sup_id,
             role=sup.get("role"),
             present=sup.get("present", True),
-        )
-        session.add(mm)
+        ))
+    reconcile_meeting_members(
+        session,
+        body=body,
+        meeting_id=meeting_id,
+        meeting_db_id=meeting_db_id_val,
+        attendance=attendance_records,
+    )
 
     # 4. Insert vote records
     seen_item_db_ids: set[int] = set()
@@ -1410,4 +1444,3 @@ def persist_pz_votes(
 
     session.commit()
     return count
-

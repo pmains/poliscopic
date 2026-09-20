@@ -5,6 +5,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
 async def main():
     from scraper.platforms.onbase import TEMPE_CONFIG, parse_agenda_html, fetch_agenda_html
@@ -49,14 +50,13 @@ async def main():
             print(f"           {text[:100]}")
         print()
 
-    # Update the database
+    # Update the database.  Resolution goes through the authoritative tier
+    # authority, which loads .env, selects the development target and refuses a
+    # production-like result; this script no longer parses .env by hand.
     from sqlalchemy import create_engine, text as sa_text
+    from db.config import DATABASE_URL as _db_url
 
-    for line in open(PROJECT_ROOT / ".env"):
-        if line.strip().startswith("DATABASE_URL="):
-            os.environ["DATABASE_URL"] = line.split("=", 1)[1].strip().strip('"').strip("'")
-
-    engine = create_engine(os.environ["DATABASE_URL"])
+    engine = create_engine(_db_url)
     updated = 0
     with engine.connect() as conn:
         trans = conn.begin()

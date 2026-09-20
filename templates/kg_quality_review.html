@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Stage 3 Quality Review | Poliscopic{% endblock %}
+{% block extra_css %}
+<style>
+  .review-card { max-width: 960px; margin: auto; }
+  .evidence { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.55; }
+  .metadata dt { color: #6c757d; font-weight: 600; }
+  .metadata dd { margin-bottom: .65rem; word-break: break-word; }
+  .sticky-actions { position: sticky; bottom: 0; background: white; border-top: 1px solid #dee2e6; padding: 1rem 0; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="review-card">
+  {% if page == 'dashboard' %}
+  <div class="d-flex justify-content-between align-items-start mb-4">
+    <div><h1>Stage 3 quality review</h1><p class="text-muted mb-0">A review-only workspace. Labels are kept separately from the immutable packet and cannot promote data.</p></div>
+    <span class="badge text-bg-primary fs-6">{{ summary.reviewed }} / {{ summary.total }}</span>
+  </div>
+  <div class="progress mb-4" role="progressbar" aria-label="Review progress"><div class="progress-bar" style="width: {{ (summary.reviewed / summary.total * 100) if summary.total else 0 }}%"></div></div>
+  {% set next_case = namespace(value=None) %}{% for item in packet["items"] %}{% if not next_case.value and item.case_id not in labels %}{% set next_case.value = item.case_id %}{% endif %}{% endfor %}
+  {% if next_case.value %}<a class="btn btn-primary mb-4" href="{{ url_for('kg_quality_review.review_case', case_id=next_case.value) }}">Resume review ({{ summary.remaining }} remaining)</a>{% else %}<div class="alert alert-success">All {{ summary.total }} cases have labels.</div>{% endif %}
+  <div class="card"><div class="card-body p-0"><div class="table-responsive"><table class="table table-hover mb-0"><thead><tr><th>Case</th><th>Body</th><th>Predicate</th><th>Status</th></tr></thead><tbody>
+  {% for item in packet["items"] %}<tr><td><a href="{{ url_for('kg_quality_review.review_case', case_id=item.case_id) }}">{{ item.case_id }}</a></td><td>{{ item.stratum.body }}</td><td>{{ item.stratum.predicate }}</td><td>{% if item.case_id in labels %}<span class="badge text-bg-success">Reviewed</span>{% else %}<span class="badge text-bg-secondary">Pending</span>{% endif %}</td></tr>{% endfor %}
+  </tbody></table></div></div></div>
+  {% else %}
+  <div class="d-flex justify-content-between align-items-center mb-3"><a href="{{ url_for('kg_quality_review.dashboard') }}">← All cases</a><span class="text-muted">Case {{ position }} of {{ summary.total }} · {{ summary.remaining }} remaining</span></div>
+  <h1 class="h3 mb-3">{{ item.case_id }}</h1>
+  <div class="row g-3 mb-4"><div class="col-md-6"><div class="card h-100"><div class="card-body"><h2 class="h5">Candidate</h2><dl class="metadata mb-0"><dt>Body</dt><dd>{{ item.stratum.body }}</dd><dt>Predicate</dt><dd>{{ item.stratum.predicate }}</dd><dt>Output</dt><dd>{{ item.candidate.output_type }} · {{ item.candidate.outcome }}</dd><dt>Container</dt><dd>{{ item.candidate.link_state }}{% if item.candidate.agenda_item_db_id %} · agenda item {{ item.candidate.agenda_item_db_id }}{% endif %}</dd></dl></div></div></div><div class="col-md-6"><div class="card h-100"><div class="card-body"><h2 class="h5">Source</h2><dl class="metadata mb-0"><dt>Document</dt><dd>{{ item.stratum.document_type }} #{{ item.document.source_id }}</dd><dt>Method</dt><dd>{{ item.stratum.extraction_method }}</dd><dt>Coordinates</dt><dd>{{ item.evidence.start }}–{{ item.evidence.end }} of {{ item.evidence.retained_text_chars }} characters</dd><dt>Original source</dt><dd><a href="{{ item.stratum.platform_or_source }}" target="_blank" rel="noopener">Open source document ↗</a></dd></dl></div></div></div></div>
+  <div class="card border-primary mb-3"><div class="card-body"><h2 class="h5">What you are approving</h2><p class="mb-1"><strong>System claim:</strong> {{ claim }}</p><p class="mb-1 text-muted">Approve when the base action is correct, even when the source adds a qualifier such as “with stipulations.” Record that additional wording separately below.</p><p class="mb-0 text-muted">This does not approve the policy outcome or change any public data.</p></div></div>
+  <div class="card mb-4"><div class="card-header">Evidence excerpt</div><div class="card-body evidence">{{ item.evidence.snippet }}</div><div class="card-footer text-muted small">The extraction points to characters {{ item.evidence.start }}–{{ item.evidence.end }} in the retained document text. Open the original source when the excerpt is not enough.</div></div>
+  <form id="review-form"><div class="row g-3"><div class="col-12"><label class="form-label fw-semibold" for="decision">Does the source support the system claim?</label><select class="form-select" id="decision">{% for value in decision_options %}<option value="{{ value }}" {% if label and label.decision == value %}selected{% elif not label and value == 'accept' %}selected{% endif %}>{% if value == 'accept' %}Yes — approve this extraction{% elif value == 'reject' %}No — the claim is not supported{% else %}Unsure — I cannot determine from the source{% endif %}</option>{% endfor %}</select></div>
+  <div class="col-md-6"><label class="form-label" for="evidence_coordinate">Can you verify that the cited location is correct?</label><select class="form-select" id="evidence_coordinate"><option value="valid" {% if label and label.evidence_coordinate == 'valid' %}selected{% elif not label %}selected{% endif %}>Yes — it points to the supporting text</option><option value="invalid" {% if label and label.evidence_coordinate == 'invalid' %}selected{% endif %}>No — it points somewhere else</option><option value="not_applicable" {% if label and label.evidence_coordinate == 'not_applicable' %}selected{% endif %}>I cannot verify the location</option></select></div>
+  <div class="col-md-6"><label class="form-label" for="container_link">Does this result belong to the stated meeting?</label><select class="form-select" id="container_link" {% if not applicability.container_link %}disabled{% endif %}>{% if applicability.container_link %}<option value="correct" {% if label and label.container_link == 'correct' %}selected{% elif not label %}selected{% endif %}>Yes — correct meeting</option><option value="incorrect" {% if label and label.container_link == 'incorrect' %}selected{% endif %}>No — wrong meeting</option><option value="not_applicable" {% if label and label.container_link == 'not_applicable' %}selected{% endif %}>I cannot determine</option>{% else %}<option value="not_applicable" selected>No canonical meeting link to review</option>{% endif %}</select></div>
+  <div class="col-12"><label class="form-label" for="source_detail">Qualifier or additional outcome wording (optional)</label><input class="form-control" id="source_detail" maxlength="500" value="{{ label.source_detail if label and label.source_detail else '' }}" placeholder="For example: with stipulations, for IME, per the applicant’s request"><div class="form-text">Preserved as review/training detail; it does not make a correct base action incorrect.</div></div>
+  <div class="col-12"><label class="form-label" for="notes">Notes (optional)</label><textarea class="form-control" id="notes" rows="3">{{ label.notes if label else '' }}</textarea></div></div>
+  <div class="sticky-actions d-flex justify-content-between align-items-center mt-4"><span id="save-status" class="text-muted" role="status"></span><div><button class="btn btn-primary" type="submit">Save review</button>{% if next_unreviewed %} <a id="next-pending" class="btn btn-outline-primary" href="{{ url_for('kg_quality_review.review_case', case_id=next_unreviewed) }}">Next pending</a>{% endif %}</div></div></form>
+  <nav class="d-flex justify-content-between mt-3">{% if previous %}<a href="{{ url_for('kg_quality_review.review_case', case_id=previous) }}">← Previous</a>{% else %}<span></span>{% endif %}{% if next_item %}<a href="{{ url_for('kg_quality_review.review_case', case_id=next_item) }}">Next →</a>{% endif %}</nav>
+  <script>
+  document.getElementById('review-form').addEventListener('submit', async function (event) {
+    event.preventDefault(); const status = document.getElementById('save-status'); status.textContent = 'Saving…';
+    const values = ['decision', 'evidence_coordinate', 'container_link', 'source_detail', 'notes'].reduce((result, id) => { const element = document.getElementById(id); result[id] = element.disabled ? 'not_applicable' : element.value; return result; }, {});
+    const response = await fetch({{ url_for('kg_quality_review.save_label', case_id=item.case_id)|tojson }}, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(values)});
+    const result = await response.json();
+    if (result.ok && result.next_url) { const next = document.getElementById('next-pending'); if (next) next.href = result.next_url; }
+    status.textContent = result.ok ? `Saved — ${result.summary.reviewed} of ${result.summary.total} reviewed.` : result.error;
+    status.className = result.ok ? 'text-success' : 'text-danger';
+  });
+  </script>
+  {% endif %}
+</div>
+{% endblock %}

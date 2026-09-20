@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Admin — Subscribers{% endblock %}
+{% block content %}
+<div class="container-fluid mt-3">
+  <h1>Admin</h1>
+  {% include "admin/_nav.html" %}
+
+  <h2 class="h5 mb-3">Newsletter Subscribers</h2>
+
+  <div class="row g-3 mb-4">
+    <div class="col-6 col-md-3">
+      <div class="card text-center h-100">
+        <div class="card-body">
+          <div class="display-6">{{ by_status.get('active', 0) }}</div>
+          <div class="text-muted small">Active</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="card text-center h-100">
+        <div class="card-body">
+          <div class="display-6">{{ by_status.get('pending', 0) }}</div>
+          <div class="text-muted small">Pending confirmation</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="card text-center h-100">
+        <div class="card-body">
+          <div class="display-6">{{ by_status.get('unsubscribed', 0) }}</div>
+          <div class="text-muted small">Unsubscribed</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="card text-center h-100">
+        <div class="card-body">
+          <div class="display-6">{{ rows|length }}</div>
+          <div class="text-muted small">Total addresses</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card mb-4">
+    <div class="card-header"><strong>Active subscribers per newsletter</strong></div>
+    <div class="card-body py-2">
+      <table class="table table-sm mb-0">
+        <thead>
+          <tr><th>Newsletter</th><th class="text-end">Active subscribers</th></tr>
+        </thead>
+        <tbody>
+          {% for slug, label in topics.items() %}
+          <tr>
+            <td>{{ label }}</td>
+            <td class="text-end">{{ topic_counts.get(slug, 0) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <table class="table table-sm table-hover align-middle">
+    <thead>
+      <tr>
+        <th>Email</th>
+        <th>Status</th>
+        <th>Subscribed to</th>
+        <th>Signed up</th>
+        <th>Confirmed</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>{{ r.email }}</td>
+        <td>
+          {% if r.status == 'active' %}
+            <span class="badge bg-success">active</span>
+          {% elif r.status == 'pending' %}
+            <span class="badge bg-warning text-dark">pending</span>
+          {% else %}
+            <span class="badge bg-secondary">{{ r.status }}</span>
+          {% endif %}
+        </td>
+        <td>
+          {% for t in r.topics %}
+            <span class="badge bg-primary">{{ topics.get(t, t) }}</span>
+          {% endfor %}
+          {% for t in r.pending_topics %}
+            <span class="badge bg-light text-dark border">{{ topics.get(t, t) }} (unconfirmed)</span>
+          {% endfor %}
+          {% if not r.topics and not r.pending_topics %}
+            <span class="text-muted">—</span>
+          {% endif %}
+        </td>
+        <td class="text-muted small">{{ r.created_at|az_date('%b %d, %Y') if r.created_at else '—' }}</td>
+        <td class="text-muted small">{{ r.confirmed_at|az_date('%b %d, %Y') if r.confirmed_at else '—' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="text-muted">No subscribers yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -141,7 +141,7 @@ class TestSummaryVoteParsing(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from scraper.jurisdictions.tempe_summary import parse_summary_text
+        from scraper.jurisdictions.tempe.council_summary import parse_summary_text
         text = _load_fixture("1687_summary.txt")
         cls.result = parse_summary_text(text)
 
@@ -197,7 +197,7 @@ class TestSummaryItemResults(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from scraper.jurisdictions.tempe_summary import parse_summary_text
+        from scraper.jurisdictions.tempe.council_summary import parse_summary_text
         text = _load_fixture("1687_summary.txt")
         cls.result = parse_summary_text(text)
 
@@ -316,7 +316,7 @@ class TestVotePersistence(unittest.TestCase):
         return item
 
     def test_persist_full_vote_set(self):
-        from scraper.jurisdictions.tempe_summary import parse_summary_text
+        from scraper.jurisdictions.tempe.council_summary import parse_summary_text
         from db import get_session, persist_votes, AgendaItemVote, MemberVote
         from sqlalchemy import select, func
 
@@ -382,7 +382,7 @@ class TestVotePersistenceReplacesOnResync(unittest.TestCase):
         _dc.set_database_url(self._saved_db_url)
 
     def test_resync_replaces_votes(self):
-        from scraper.jurisdictions.tempe_summary import parse_summary_text
+        from scraper.jurisdictions.tempe.council_summary import parse_summary_text
         from db import get_session, persist_votes, AgendaItemVote
         from sqlalchemy import select, func
 

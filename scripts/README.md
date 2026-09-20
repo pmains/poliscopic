@@ -43,7 +43,7 @@ run_pipeline.py  ──scrape done──▶ check_docs.py   (doc availability)
 
 | Script | What it does |
 |---|---|
-| **`ingest_docs.py`** | Downloads supporting-document PDFs and extracts text (pymupdf → pdftotext → OCR). Runs in batches, concurrent workers. Includes safety checks (URL allowlist, size limits, PDF validation). |
+| **`ingest_docs.py`** | Downloads supporting-document PDFs and runs the governed layout cascade (native word boxes → Poppler fallback → Tesseract TSV). Retains plain text plus immutable layout evidence. Runs concurrently and includes URL, size, and PDF safety checks. |
 
 ```
 ingest_docs.py  ──download──▶  safety check  ──extract──▶  DB write
@@ -51,6 +51,11 @@ ingest_docs.py  ──download──▶  safety check  ──extract──▶  D
                                ├─ quarantine→ skip, keep file for review
                                └─ reject    → remove, log reason
 ```
+
+The extraction contract is documented in
+[`docs/DOCUMENT-EXTRACTION.md`](../docs/DOCUMENT-EXTRACTION.md). Do not add a
+new direct plain-text OCR or `pdftotext` writer for stored supporting documents;
+route it through `scripts/docs/extract.py` so page geometry and lineage survive.
 
 ---
 

@@ -302,8 +302,9 @@ def theme_preview(theme_id):
         .limit(20)
     ).scalars().all()
 
+    # Brief 013: featured = 3 most recent published (mirrors front_page)
     featured = session.execute(
-        select(Article).where(Article.status == "published", Article.is_featured == True)
+        select(Article).where(Article.status == "published")
         .order_by(desc(Article.published_at))
         .limit(3)
     ).scalars().all()

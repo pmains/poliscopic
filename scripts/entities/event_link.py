@@ -19,14 +19,32 @@ Usage:
 """
 
 import logging
+import json
 import os
 import re
 import sys
 import time
+from typing import Any
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "scripts"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from db import get_engine
 from sqlalchemy import text
+
+from scripts.kg.emission import EmissionValidator, emit_validated
+
+from entities.event_link_storage import (
+    _classify_candidate_rows,
+    _deduplicate_candidates,
+    _empty_link_stats,
+    _event_id_batch,
+    _event_rows,
+    _existing_participants,
+    _insert_participants,
+    _storage_confidence,
+    _upgrade_participants,
+    load_meeting_entity_lookup,
+)
 
 log = logging.getLogger("event_link")
 
@@ -282,178 +300,159 @@ def extract_names(raw_text: str) -> list[dict]:
     return results
 
 
-# ── Strategy B: Cross-reference through meetings ─────────────────────────
-
-def load_meeting_entity_lookup(engine) -> dict:
-    """Build lookup: meeting_id -> [(entity_id, entity_name, role)] from entity_mentions.
-
-    Uses entity_mentions.source_type/source_id to find entities linked to
-    agenda_items and supporting_documents for each meeting.
-    """
-    lookup = {}
-
-    # Get entity mentions for agenda_items (which have meeting_id)
-    with engine.connect() as c:
-        rows = c.execute(text("""
-            SELECT ai.meeting_id, em.entity_id, e.name, e.normalized_name,
-                   em.role_in_context
-            FROM entity_mentions em
-            JOIN entities e ON e.id = em.entity_id
-            JOIN agenda_items ai ON ai.id = em.source_id
-            WHERE em.source_type = 'agenda_item'
-              AND (e.resolution_status IS NULL OR e.resolution_status = 'canonical')
-        """)).fetchall()
-
-    for r in rows:
-        meeting_id = str(r[0] or "")
-        entity_id = int(r[1])
-        entity_name = str(r[2] or "")
-        norm_name = str(r[3] or "")
-        role = str(r[4] or "") or "participant"
-
-        if meeting_id not in lookup:
-            lookup[meeting_id] = {}
-        if entity_id not in lookup[meeting_id]:
-            lookup[meeting_id][entity_id] = {
-                "id": entity_id, "name": entity_name,
-                "normalized_name": norm_name, "role": role,
-            }
-
-    # Also get from supporting_documents
-    with engine.connect() as c:
-        rows = c.execute(text("""
-            SELECT sd.meeting_id, em.entity_id, e.name, e.normalized_name,
-                   em.role_in_context
-            FROM entity_mentions em
-            JOIN entities e ON e.id = em.entity_id
-            JOIN supporting_documents sd ON sd.id = em.source_id
-            WHERE em.source_type = 'supporting_document'
-              AND sd.meeting_id IS NOT NULL
-              AND (e.resolution_status IS NULL OR e.resolution_status = 'canonical')
-        """)).fetchall()
-
-    for r in rows:
-        meeting_id = str(r[0] or "")
-        if not meeting_id:
-            continue
-        entity_id = int(r[1])
-        entity_name = str(r[2] or "")
-        norm_name = str(r[3] or "")
-        role = str(r[4] or "") or "participant"
-
-        if meeting_id not in lookup:
-            lookup[meeting_id] = {}
-        if entity_id not in lookup[meeting_id]:
-            lookup[meeting_id][entity_id] = {
-                "id": entity_id, "name": entity_name,
-                "normalized_name": norm_name, "role": role,
-            }
-
-    return lookup
-
-
 # ── Main processing ──────────────────────────────────────────────────────
 
 def link_events(engine, entity_lookup: list[dict],
                 meeting_entity_lookup: dict,
                 limit: int = None, dry_run: bool = False,
                 reprocess: bool = False) -> dict:
-    """Process meeting_events and write event_participants."""
-    stats = {"events_processed": 0, "names_from_text": 0, "matched_via_text": 0,
-             "names_via_meeting": 0, "matched_via_meeting": 0,
-             "participants_written": 0, "errors": 0}
-    done = False
+    """Process logical meeting events and write event_participants."""
+    stats = _empty_link_stats()
+    validator = EmissionValidator("event_pipeline", LINKER_VERSION, dry_run=dry_run)
     cursor_id = 0  # Cursor-based pagination: last processed event ID
 
-    while not done:
-        with engine.connect() as c:
-            rows = c.execute(text("""
-                SELECT e.id, e.meeting_id, e.outcome, e.case_number,
-                       ee.raw_text, et.slug AS event_type_slug,
-                       e.supporting_doc_id
-                FROM meeting_events e
-                JOIN meeting_event_extractions ee ON ee.meeting_event_id = e.id
-                JOIN meeting_event_types et ON et.id = e.event_type_id
-                WHERE e.id > :cursor
-                ORDER BY e.id
-                LIMIT :limit
-            """), {"cursor": cursor_id, "limit": BATCH_SIZE}).fetchall()
-
-        if not rows:
+    while True:
+        remaining = None if limit is None else max(limit - stats["events_attempted"], 0)
+        if remaining == 0:
             break
-
-        batch_participants = []
-
+        fetch_size = (
+            min(BATCH_SIZE, remaining) if remaining is not None else BATCH_SIZE
+        )
+        event_ids = _event_id_batch(engine, cursor_id, fetch_size)
+        if not event_ids:
+            break
+        rows = _event_rows(engine, event_ids)
+        records = {event_id: {"meeting_id": "", "raw_texts": []}
+                   for event_id in event_ids}
         for row in rows:
             event_id = int(row[0])
-            meeting_id = str(row[1] or "")
-            raw_text = str(row[4] or "")
+            records[event_id]["meeting_id"] = str(row[1] or "")
+            if row[4] is not None:
+                records[event_id]["raw_texts"].append(str(row[4]))
+
+        batch_participants = []
+        derived_excluded = []
+
+        for event_id in event_ids:
+            meeting_id = records[event_id]["meeting_id"]
             cursor_id = event_id
             stats["events_processed"] += 1
+            stats["events_attempted"] += 1
+            unresolved = set()
+            for raw_text in records[event_id]["raw_texts"]:
+                if not raw_text or len(raw_text) < 20:
+                    continue
 
-            if not raw_text or len(raw_text) < 20:
-                continue
+                # Strategy A: Extract names from raw text
+                names = extract_names(raw_text)
+                stats["names_from_text"] += len(names)
 
-            # Strategy A: Extract names from raw text
-            names = extract_names(raw_text)
-            stats["names_from_text"] += len(names)
-
-            matched_pairs = set()  # (entity_id, role) already written
-
-            for ni in names:
-                matches = match_entity(ni["name"], entity_lookup)
-                for ent, conf, method in matches:
-                    pair = (ent["id"], ni["role"])
-                    if pair not in matched_pairs:
+                for ni in names:
+                    matches = match_entity(ni["name"], entity_lookup)
+                    if not matches:
+                        unresolved.add((normalize_name(ni["name"]), ni["role"]))
+                    for ent, conf, method in matches:
                         batch_participants.append((event_id, ent["id"], ni["role"], conf))
-                        matched_pairs.add(pair)
                         stats["matched_via_text"] += 1
 
-            # Strategy C: Cross-reference through meeting context
+            stats["unresolved_names"] += len(unresolved)
+
+            # Strategy C: meeting-context cross-reference is co-occurrence, not
+            # observed participation.  It is derived at best, and the canonical
+            # store cannot yet represent derived participation, so it is
+            # withheld from canonical output and reported on the receipt.
             if meeting_id and meeting_id in meeting_entity_lookup:
                 for eid, info in meeting_entity_lookup[meeting_id].items():
-                    pair = (eid, info["role"])
-                    if pair not in matched_pairs:
-                        batch_participants.append((event_id, eid, info["role"], 0.5))
-                        matched_pairs.add(pair)
-                        stats["names_via_meeting"] += 1
-                        stats["matched_via_meeting"] += 1
+                    derived_excluded.append((event_id, eid, info["role"]))
+                    stats["names_via_meeting"] += 1
+                    stats["matched_via_meeting"] += 1
 
-        # Write batch
-        if batch_participants and not dry_run:
-            with engine.begin() as c:
-                raw_conn = c.connection
-                if hasattr(raw_conn, 'driver_connection'):
-                    pg_conn = raw_conn.driver_connection
-                else:
-                    pg_conn = raw_conn
+        batch_participants = _deduplicate_candidates(batch_participants)
+        stats["participant_attempts"] += len(batch_participants)
 
-                from psycopg2.extras import execute_values
+        # Validate EVERY proposed emission, replay/no-op candidates included,
+        # before mutation classification and before any write (dry or live).
+        validator.start_batch()
+        validator.note_derived_exclusion(
+            len(derived_excluded),
+            "meeting-context co-occurrence is derived, not source-supported "
+            "participation; withheld until the approved representation exists",
+        )
+        validated = emit_validated(
+            validator,
+            "role",
+            batch_participants,
+            to_value=lambda candidate: candidate[2],
+            source="event_participants",
+        )
+        batch_participants = [
+            (candidate[0], candidate[1], canonical, candidate[3])
+            for candidate, canonical in validated
+        ]
+        validator.complete_validation()
 
-                execute_values(
-                    pg_conn.cursor(),
-                    """
-                        INSERT INTO event_participants
-                            (meeting_event_id, entity_id, role_in_event, confidence)
-                        VALUES %s
-                        ON CONFLICT (meeting_event_id, entity_id, role_in_event)
-                        DO UPDATE SET
-                            confidence = GREATEST(event_participants.confidence, EXCLUDED.confidence)
-                    """,
-                    batch_participants,
-                    template="(%s, %s, %s, %s)",
+        # Classify and write in one transaction. Exceptions intentionally propagate.
+        if batch_participants:
+            inserted = 0
+            updated = 0
+            attempted_mutations = 0
+            try:
+                with engine.begin() as c:
+                    existing = _existing_participants(c, batch_participants)
+                    outcomes, insert_rows, update_rows = _classify_candidate_rows(
+                        existing, batch_participants
+                    )
+                    attempted_mutations = len(insert_rows) + len(update_rows)
+                    if not dry_run:
+                        validator.begin_writes()
+                        if insert_rows:
+                            inserted = _insert_participants(c, insert_rows)
+                        if update_rows:
+                            updated = _upgrade_participants(c, update_rows)
+            except Exception as error:
+                # Classify the attempted mutations first so the mutation
+                # equation still balances, then explain them as rolled back.
+                # Prior committed batches stay visible on the receipt.
+                if attempted_mutations:
+                    validator.classify_rows(would_insert=attempted_mutations)
+                validator.rollback(
+                    attempted_mutations, f"{type(error).__name__}: {error}"
                 )
+                stats["validation_receipt"] = validator.seal().serialize()
+                raise
+            if dry_run:
+                validator.classify_rows(
+                    would_insert=len(insert_rows),
+                    would_update=len(update_rows),
+                    replay_noop=outcomes["participant_replay_collisions"],
+                )
+            else:
+                # Rows that did not actually insert were already present.
+                validator.classify_rows(
+                    would_insert=inserted,
+                    would_update=updated,
+                    replay_noop=(
+                        outcomes["participant_replay_collisions"]
+                        + max(0, len(insert_rows) - inserted)
+                    ),
+                )
+                validator.commit(inserted + updated)
+            stats["participants_planned_insert"] += outcomes["participants_inserted"]
+            stats["participants_planned_update"] += outcomes["participants_updated"]
+            if not dry_run:
+                stats["participants_inserted"] += inserted
+                stats["participants_updated"] += updated
+                stats["participants_written"] += inserted + updated
+                stats["participants_mutated"] += inserted + updated
+            stats["participant_replay_collisions"] += outcomes["participant_replay_collisions"]
 
-            stats["participants_written"] += len(batch_participants)
-
-        if len(rows) < BATCH_SIZE:
-            break
-        if limit and stats["events_processed"] >= limit:
+        if len(event_ids) < BATCH_SIZE:
             break
         if stats["events_processed"] % 500 == 0:
             log.info("  Progress: %d events, %d participants written",
                      stats["events_processed"], stats["participants_written"])
 
+    stats["validation_receipt"] = validator.seal().serialize()
     return stats
 
 
@@ -477,6 +476,8 @@ def main():
     entities = load_entity_lookup(engine)
     log.info("Loaded %d active entities", len(entities))
 
+    # Brief 016 Step 3 will replace this union with taxonomy traversal; that is a
+    # separate behavior change and must not ride along with Brief 018.
     orgs = [e for e in entities if e["entity_type"] in ("organization", "developer",
                                                          "planning_firm", "law_firm")]
     people = [e for e in entities if e["entity_type"] == "person"]
@@ -518,6 +519,12 @@ def main():
         stats["names_via_meeting"], stats["matched_via_meeting"],
         stats["participants_written"], elapsed,
     )
+    print(json.dumps({
+        "step": "link",
+        "success": True,
+        "dry_run": args.dry_run,
+        "stats": stats,
+    }))
 
 
 if __name__ == "__main__":

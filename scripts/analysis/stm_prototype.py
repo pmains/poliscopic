@@ -7,7 +7,7 @@ and Tempe (2021-2025), using jurisdiction as a prevalence covariate to
 estimate which topics shift between the two cities.
 
 Usage:
-    cd /Users/pmains/Code/openclaw/maricopa-agendas
+    cd /path/to/poliscopic
     source .venv/bin/activate
     python3 scripts/analysis/stm_prototype.py
 

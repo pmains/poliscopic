@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Manage newsletters — Poliscopic{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-8">
+        {% if not ok %}
+        <div class="text-center py-5">
+            <h1 class="mb-3">Link invalid or expired</h1>
+            <p class="lead">This manage link is no longer valid.</p>
+            <p><a href="/newsletter">Request a new one</a> from the newsletter page.</p>
+        </div>
+        {% else %}
+        <h1 class="mb-3">Manage your newsletters</h1>
+        <p class="text-muted">For <strong>{{ email }}</strong>. Pick which digests you want, then save.</p>
+
+        {% if saved %}<div class="alert alert-success">Preferences saved.</div>{% endif %}
+        {% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
+
+        <form method="POST" action="/newsletter/manage" class="card">
+            <div class="card-body">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="manage_token" value="{{ manage_token }}">
+                <fieldset class="mb-3">
+                    <legend class="form-label mb-2">Newsletters</legend>
+                    {% for slug, label in all_topics.items() %}
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" value="{{ slug }}"
+                               id="topic-{{ slug }}" name="topics"
+                               {% if slug in topics %}checked{% endif %}>
+                        <label class="form-check-label" for="topic-{{ slug }}">{{ label }}</label>
+                    </div>
+                    {% endfor %}
+                </fieldset>
+                <button type="submit" class="btn btn-primary">Save preferences</button>
+            </div>
+        </form>
+
+        <form method="POST" action="/newsletter/manage" class="mt-4"
+              onsubmit="return confirm('Unsubscribe from ALL Poliscopic newsletters?');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="manage_token" value="{{ manage_token }}">
+            <input type="hidden" name="action" value="unsubscribe_all">
+            <button type="submit" class="btn btn-outline-danger btn-sm">Unsubscribe from everything</button>
+        </form>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

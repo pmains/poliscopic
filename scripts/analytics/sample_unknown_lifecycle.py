@@ -14,7 +14,7 @@ from db import get_engine
 from sqlalchemy import text
 
 BODIES = ["bos", "phoenix-cc", "phoenix-ti", "phoenix-ps", "chandler-cc", "tempe-cc",
-          "mesa-cc", "glendale-cc", "scottsdale-cc", "el-mirage-cc"]
+          "mesa-city-council", "glendale-cc", "scottsdale-cc", "el-mirage-cc"]
 
 def main():
     body_arg = sys.argv[sys.argv.index("--body") + 1] if "--body" in sys.argv else None

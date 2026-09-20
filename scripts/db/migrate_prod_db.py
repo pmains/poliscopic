@@ -16,6 +16,11 @@ import os
 import re
 import sys
 
+# Make the shared database-tier authority importable however this tool is invoked.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
+
+from db.tier import PRODUCTION, TierError, resolve_role_url  # noqa: E402
+from ops.production_interlock_guard import require_production_interlock  # noqa: E402
 from sqlalchemy import inspect as sa_inspect, text
 from sqlalchemy import create_engine
 
@@ -32,11 +37,17 @@ def _mask_url(url: str) -> str:
 
 
 def _resolve_prod_url() -> str:
+    """The production role, validated before any engine is constructed."""
     url = os.environ.get("PROD_DATABASE_URL")
     if not url:
         log.error("Set PROD_DATABASE_URL")
         sys.exit(1)
-    log.info("Prod: %s", _mask_url(url))
+    try:
+        target = resolve_role_url(PRODUCTION, url, label="prod")
+    except TierError as exc:
+        log.error("prod role refused before connecting: %s", exc)
+        sys.exit(1)
+    log.info("Prod: %s", target.redacted())
     return url
 
 
@@ -184,6 +195,7 @@ def create_ingest_failures(engine):
                 error_category  VARCHAR(32) NOT NULL,
                 source          VARCHAR(64) NOT NULL,
                 body            VARCHAR(16),
+                -- External scraper/source ID, never a meetings.id reference.
                 meeting_id      VARCHAR(32),
                 meeting_date    VARCHAR(16),
                 error           TEXT NOT NULL,
@@ -229,6 +241,7 @@ def print_status(engine):
 
 
 def main():
+    require_production_interlock("OP-SCHEMA", "scripts/db/migrate_prod_db.py")
     prod_url = _resolve_prod_url()
     engine = create_engine(prod_url, pool_size=2, connect_args={"connect_timeout": 10})
 
@@ -251,7 +264,7 @@ def main():
     print("                  python3 scripts/db/sync_prod.py")
     print("    2. Deploy:  ./scripts/deploy_code.sh --execute")
     print("    3. Reload:  ./scripts/reload_gunicorn.sh")
-    print("    4. Verify:  ssh root@poliscopic.com \\")
+    print("    4. Verify using the configured production deployment host")
     print("                  'cd /opt/poliscopic && python3 scripts/verify_deploy.py'")
     print("    5. Cleanup: PROD_DATABASE_URL=\"...\" \\")
     print("                  python3 scripts/db/cleanup_prod_db.py")

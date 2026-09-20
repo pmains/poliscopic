@@ -344,7 +344,7 @@ async def main() -> int:
             existing = session.execute(
                 select(Meeting).where(Meeting.body == body_code, Meeting.meeting_id == meeting_id)
             ).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not args.force:
+            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
                 if args.limit and idx > args.limit:
                     break
                 continue
@@ -408,18 +408,21 @@ async def main() -> int:
             link_staff_reports_to_meetings,
         )
         import datetime as _pdt
-        import time as _time
-
         init_db()
         session = get_session()
 
         log.info("Fetching Phoenix AEM meeting results (incremental)...")
 
+        # Shared sentinel/non-meeting guard: the ordinary search path uses the
+        # same helper, so the two ingestion routes cannot drift apart.
+        from scraper.jurisdictions.phoenix_aem import resolve_persistable_body
+
         PAGE_SIZE = 10
         offset = 0
         total_fetched = 0
         total_new = 0
-        start_ts = _time.time()
+        skipped_sentinels = 0
+        start_ts = time.time()
 
         while total_fetched < 5000:
             url = _build_url(RESULTS_BASE, "", offset)
@@ -436,7 +439,14 @@ async def main() -> int:
             for raw in results:
                 total_fetched += 1
                 title = raw.get("title", "") or ""
-                slug, code = resolve_body(title) if title else ("phoenix-aem", "phoenix-aem")
+                resolved = resolve_persistable_body(title)
+                if resolved is None:
+                    # A sentinel body or non-meeting title must never be converted
+                    # or persisted: such a row is unparentable and would block
+                    # normalization downstream.
+                    skipped_sentinels += 1
+                    continue
+                slug, code = resolved
                 meeting_dict = convert_to_meeting_dict(raw, slug, code)
                 meeting_dict["meeting_type"] = "Result"
                 meeting_dict["sync_status"] = "complete"
@@ -459,7 +469,7 @@ async def main() -> int:
                 )
                 total_new += 1
 
-            elapsed = _time.time() - start_ts
+            elapsed = time.time() - start_ts
             log.info(
                 "  offset=%d  fetched=%d  new=%d  (%.0fs)",
                 offset, total_fetched, total_new, elapsed,
@@ -469,7 +479,7 @@ async def main() -> int:
             if len(results) < PAGE_SIZE:
                 break
             offset += PAGE_SIZE
-            _time.sleep(0.5)
+            time.sleep(0.5)
 
         # Cross-reference staff reports to results meetings
         try:
@@ -480,8 +490,8 @@ async def main() -> int:
             log.warning("Staff report cross-referencing failed: %s", e)
 
         session.close()
-        elapsed = _time.time() - start_ts
-        print(f"{_pdt.datetime.now().strftime('%H:%M:%S')} Done. {total_fetched} results, {total_new} new in {elapsed:.0f}s")
+        elapsed = time.time() - start_ts
+        print(f"{_pdt.datetime.now().strftime('%H:%M:%S')} Done. {total_fetched} results, {total_new} new, {skipped_sentinels} sentinel/non-meeting skipped in {elapsed:.0f}s")
         return 0
 
     if args.source == "phoenix-planning" and args.sync:
@@ -689,7 +699,7 @@ async def main() -> int:
                 )
             ).scalar_one_or_none()
 
-            if db_m and db_m.sync_status in ("complete", "no_agenda") and not args.force:
+            if db_m and (db_m.sync_status == "no_agenda" or (db_m.sync_status == "complete" and (db_m.item_count_actual or 0) > 0)) and not args.force:
                 print(f"  [{idx}/{meeting_count}] {meeting_id} {meeting_date}: {db_m.sync_status} (skip)")
                 if db_m.sync_status == "complete":
                     total_items += db_m.item_count_actual or 0
@@ -1011,7 +1021,7 @@ async def main() -> int:
             existing = session.execute(
                 select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)
             ).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not args.force:
+            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
                 # ── Try minutes vote extraction even for already-synced meetings ──
                 _extract_chandler_minutes(session, body_code, meeting_id, meeting_date)
                 session.commit()
@@ -1175,7 +1185,7 @@ async def main() -> int:
             from db import Meeting as MeetingModel
             from sqlalchemy import select
             existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not args.force:
+            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
                 print("  [%d/%d] %s %s: already synced" % (idx, meeting_count, meeting_id, meeting_date))
                 continue
             try:
@@ -1374,7 +1384,7 @@ async def main() -> int:
                 )
             ).scalar_one_or_none()
 
-            if existing and existing.sync_status == "complete" and not args.force:
+            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
                 print(f"  [{idx}/{meeting_count}] {meeting_id} {meeting_date}: already synced")
                 if existing.item_count_actual:
                     total_items += existing.item_count_actual
@@ -1591,7 +1601,7 @@ async def main() -> int:
                             )
                         ).scalar_one_or_none()
 
-                        if db_m and db_m.sync_status in ("complete", "no_agenda") and not args.force:
+                        if db_m and (db_m.sync_status == "no_agenda" or (db_m.sync_status == "complete" and (db_m.item_count_actual or 0) > 0)) and not args.force:
                             print(f"    [{idx}/{len(meetings)}] {meeting.meeting_id} {meeting.meeting_date}: {db_m.sync_status} (skip)")
                             if db_m.sync_status == "complete":
                                 total_items += db_m.item_count_actual or 0
@@ -1889,7 +1899,7 @@ async def main() -> int:
             existing = session.execute(
                 select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)
             ).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not args.force:
+            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
                 print("  [%d/%d] %s %s: already synced, skipping" % (idx, meeting_count, meeting_id, meeting_date))
                 continue
 
@@ -2020,7 +2030,7 @@ async def main() -> int:
                 )
             ).scalar_one_or_none()
 
-            if existing and existing.sync_status == "complete" and not args.force:
+            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
                 continue
 
             try:
@@ -2096,7 +2106,7 @@ async def main() -> int:
             existing = session.execute(
                 select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)
             ).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not args.force:
+            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
                 print("  [%d/%d] %s %s: already synced, skipping" % (idx, meeting_count, meeting_id, meeting_date))
                 continue
 
@@ -2218,7 +2228,7 @@ async def main() -> int:
                 existing = session.execute(
                     select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)
                 ).scalar_one_or_none()
-                if existing and existing.sync_status == "complete" and not args.force:
+                if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
                     continue
                 try:
                     pdf = download_pdf(agenda_url)
@@ -2318,7 +2328,7 @@ async def main() -> int:
             meeting_date = m["meeting_date"]
             body_slug = m.get("body_slug", "mesa-city-council")
             # Use BODY_CODE_MAP for correct mapping (slug → code)
-            body_code = BODY_CODE_MAP.get(body_slug, "mesa-cc")
+            body_code = BODY_CODE_MAP.get(body_slug, "mesa-city-council")
             detail_url = m.get("meeting_detail_url", "")
             # Fall back to agenda_url if no detail URL
             if not detail_url:
@@ -2342,7 +2352,10 @@ async def main() -> int:
                     MeetingModel.meeting_id == meeting_id,
                 )
             ).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not args.force:
+            # Brief 006: a "complete" meeting with 0 items may have had its
+            # agenda published since the row was created — don't skip it.
+            if existing and existing.sync_status == "complete" \
+                    and (existing.item_count_actual or 0) > 0 and not args.force:
                 print("  [%d/%d] %s %s: already synced" % (idx, meeting_count, meeting_id, meeting_date))
                 continue
 
@@ -2504,7 +2517,11 @@ async def main() -> int:
             from db import Meeting as MeetingModel
             from sqlalchemy import select
             existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not args.force:
+            # Brief 006: same guard fix as phoenix-rss — a "complete" meeting
+            # with 0 items may have had its agenda published since the row was
+            # created weeks early; don't skip it.
+            if existing and existing.sync_status == "complete" \
+                    and (existing.item_count_actual or 0) > 0 and not args.force:
                 print("  [%d/%d] %s %s: already synced" % (idx, meeting_count, meeting_id, meeting_date))
                 continue
             try:
@@ -2579,7 +2596,7 @@ async def main() -> int:
             from db import Meeting as MeetingModel
             from sqlalchemy import select
             existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not args.force:
+            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
                 print("  [%d/%d] %s %s: already synced" % (idx, meeting_count, meeting_id, meeting_date))
                 continue
             try:
@@ -2657,7 +2674,11 @@ async def main() -> int:
             meeting_title = m.get("meeting_title", "")
             meeting_dict = {"meeting_id": meeting_id, "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": detail_url}
             existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not args.force:
+            # Brief 006: don't skip "complete" meetings that have 0 items — the
+            # row was created weeks early from the calendar and the agenda may
+            # have dropped since. Only a complete meeting WITH items is done.
+            if existing and existing.sync_status == "complete" \
+                    and (existing.item_count_actual or 0) > 0 and not args.force:
                 print("  [%d/%d] %s %s: already synced, %d items" % (idx, meeting_count, meeting_id, meeting_date, existing.item_count_actual or 0))
                 total_items += existing.item_count_actual or 0
                 continue
@@ -2735,7 +2756,7 @@ async def main() -> int:
                     MeetingModel.meeting_id == meeting_id,
                 )
             ).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not args.force:
+            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
                 print("  [%d/%d] %s %s: already synced" % (idx, meeting_count, meeting_id, meeting_date))
                 continue
 
@@ -2816,7 +2837,7 @@ async def main() -> int:
             meeting_title = m.get("body_name", "")
             meeting_dict = {"meeting_id": meeting_id, "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": agenda_url}
             existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not args.force:
+            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
                 print("  [%d/%d] %s %s: already synced" % (idx, meeting_count, meeting_id, meeting_date))
                 continue
             try:
@@ -2918,7 +2939,7 @@ async def main() -> int:
             meeting_title = m.get("body_name", "")
             meeting_dict = {"meeting_id": meeting_id, "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": agenda_url}
             existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not args.force:
+            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
                 print("  [%d/%d] %s %s: already synced" % (idx, meeting_count, meeting_id, meeting_date))
                 continue
             try:
@@ -3036,7 +3057,7 @@ async def main() -> int:
                     MeetingModel.meeting_id == str(event_id),
                 )
             ).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not getattr(args, "force", False):
+            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not getattr(args, "force", False):
                 print(f"  [{idx}/{meeting_count}] {event_id} {meeting_date}: already synced, {existing.item_count_actual or 0} items")
                 total_items += existing.item_count_actual or 0
                 continue
@@ -3088,11 +3109,10 @@ async def main() -> int:
     # ── Avondale sync (via CivicClerk — current) ──
     if args.source == "avondale" and args.sync:
         import datetime as _dt
-        import time as _time
         from db import get_session, init_db, replace_meeting_data_safe
         from scraper.platforms.civicclerk import CivicClerkConfig, search_meetings, fetch_and_parse_agenda
 
-        _avondale_t0 = _time.time()
+        _avondale_t0 = time.time()
         print(f"  [dbg] Avondale sync starting...")
 
         avondale_config = CivicClerkConfig(
@@ -3131,9 +3151,9 @@ async def main() -> int:
         end_date = getattr(args, "end_date", None) or f"{year}-12-31"
 
         print("Searching Avondale CivicClerk meetings from %s to %s..." % (start_date, end_date))
-        _t_search = _time.time()
+        _t_search = time.time()
         meetings = search_meetings(avondale_config, start_date=start_date)
-        print(f"  [dbg]   search_meetings took {_time.time() - _t_search:.1f}s")
+        print(f"  [dbg]   search_meetings took {time.time() - _t_search:.1f}s")
         if body_slugs:
             meetings = [m for m in meetings if m["body_code"] in body_slugs]
         if not meetings:
@@ -3154,9 +3174,9 @@ async def main() -> int:
         from db import Meeting as MeetingModel
         from sqlalchemy import select
 
-        _t_loop_start = _time.time()
+        _t_loop_start = time.time()
         for idx, m in enumerate(meetings, 1):
-            _t_meeting = _time.time()
+            _t_meeting = time.time()
             meeting_id = str(m.get("event_id", m["meeting_id"]))
             meeting_date = m["meeting_date"]
             body_code = m.get("body_code", "avondale-cc")
@@ -3168,8 +3188,8 @@ async def main() -> int:
             meeting_dict = {"meeting_id": meeting_id, "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": source_url}
 
             existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not args.force:
-                print("  [%d/%d] %s %s: already synced (%d items) [%.1fs]" % (idx, meeting_count, meeting_id, meeting_date, existing.item_count_actual or 0, _time.time() - _t_meeting))
+            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
+                print("  [%d/%d] %s %s: already synced (%d items) [%.1fs]" % (idx, meeting_count, meeting_id, meeting_date, existing.item_count_actual or 0, time.time() - _t_meeting))
                 total_items += existing.item_count_actual or 0
                 continue
 
@@ -3202,15 +3222,15 @@ async def main() -> int:
                 )
                 total_items += len(items)
                 doc_summary = f" ({len(supp_docs)} doc(s))" if supp_docs else ""
-                print("  [%d/%d] %s %s: %d items synced%s [%.1fs]" % (idx, meeting_count, meeting_id, meeting_date, len(items), doc_summary, _time.time() - _t_meeting))
+                print("  [%d/%d] %s %s: %d items synced%s [%.1fs]" % (idx, meeting_count, meeting_id, meeting_date, len(items), doc_summary, time.time() - _t_meeting))
             except Exception as e:
                 log.error("Failed Avondale meeting %s: %s", meeting_id, e)
 
         session.close()
-        _total_elapsed = _time.time() - _avondale_t0
+        _total_elapsed = time.time() - _avondale_t0
         ts = _dt.datetime.now().strftime("%H:%M:%S")
         print("%s Synced %d Avondale CivicClerk items across %d meeting(s) [%ds total]" % (ts, total_items, meeting_count, _total_elapsed))
-        print(f"  [dbg] Avondale done in {_total_elapsed:.0f}s (loop phase: {_time.time() - _t_loop_start:.1f}s)")
+        print(f"  [dbg] Avondale done in {_total_elapsed:.0f}s (loop phase: {time.time() - _t_loop_start:.1f}s)")
         return 0
 
     # ── Avondale Granicus sync (legacy, no items) ──
@@ -3256,7 +3276,7 @@ async def main() -> int:
             meeting_title = m.get("meeting_title", "")
             meeting_dict = {"meeting_id": meeting_id, "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": source_url}
             existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not args.force:
+            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
                 print("  [%d/%d] %s %s: already synced" % (idx, meeting_count, meeting_id, meeting_date))
                 continue
             try:
@@ -3332,7 +3352,7 @@ async def main() -> int:
             meeting_title = m.get("meeting_title", "")
             meeting_dict = {"meeting_id": meeting_id, "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": source_url, "source_system": SOURCE_SYSTEM}
             existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not args.force:
+            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
                 print("  [%d/%d] %s %s: already synced, %d items" % (idx, meeting_count, meeting_id, meeting_date, existing.item_count_actual or 0))
                 if existing.item_count_actual:
                     total_items += existing.item_count_actual
@@ -3418,7 +3438,7 @@ async def main() -> int:
             from db import Meeting as MeetingModel
             from sqlalchemy import select
             existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not args.force:
+            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
                 print("  [%d/%d] %s %s: already synced" % (idx, meeting_count, meeting_id, meeting_date))
                 continue
             try:
@@ -3476,7 +3496,7 @@ async def main() -> int:
             from db import Meeting as MeetingModel
             from sqlalchemy import select
             existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == str(meeting_id))).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not args.force:
+            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
                 print("  [%d/%d] %s %s: already synced" % (idx, meeting_count, meeting_id, meeting_date))
                 continue
             try:
@@ -3525,6 +3545,7 @@ async def main() -> int:
         return 0
 
     if args.source == "surprise-civicclerk" and args.sync:
+        _surprise_t0 = time.time()  # start of this Surprise branch, for total elapsed
         import datetime as _dt
         from db import get_session, init_db, replace_meeting_data_safe
         from scraper.platforms.civicclerk import CivicClerkConfig, search_meetings, fetch_meeting_items
@@ -3560,9 +3581,9 @@ async def main() -> int:
         year = int(year_val) if year_val else _dt.date.today().year
         start_date = getattr(args, "start_date", None) or f"{year}-01-01"
         print("Searching Surprise CivicClerk meetings from %s..." % start_date)
-        _t_search = _sc_time.time()
+        _t_search = time.time()
         meetings = search_meetings(surprise_config, start_date=start_date)
-        print(f"  [dbg]   search_meetings took {_sc_time.time() - _t_search:.1f}s")
+        print(f"  [dbg]   search_meetings took {time.time() - _t_search:.1f}s")
         if body_slugs:
             meetings = [m for m in meetings if m["body_code"] in body_slugs]
         if not meetings:
@@ -3574,9 +3595,9 @@ async def main() -> int:
         meeting_count = len(meetings)
         from db import Meeting as MeetingModel
         from sqlalchemy import select
-        _t_loop_start = _sc_time.time()
+        _t_loop_start = time.time()
         for idx, m in enumerate(meetings, 1):
-            _t_mtg = _sc_time.time()
+            _t_mtg = time.time()
             event_id = m.get("event_id")
             if not event_id:
                 event_id = int(m.get("meeting_id", 0))
@@ -3587,8 +3608,8 @@ async def main() -> int:
             source_url = m.get("source_url", "")
             meeting_dict = {"meeting_id": str(event_id), "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": source_url}
             existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == str(event_id))).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not args.force:
-                print("  [%d/%d] %s %s: already synced (%d items) [%.1fs]" % (idx, meeting_count, event_id, meeting_date, existing.item_count_actual or 0, _sc_time.time() - _t_mtg))
+            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
+                print("  [%d/%d] %s %s: already synced (%d items) [%.1fs]" % (idx, meeting_count, event_id, meeting_date, existing.item_count_actual or 0, time.time() - _t_mtg))
                 total_items += existing.item_count_actual or 0
                 continue
             try:
@@ -3596,13 +3617,13 @@ async def main() -> int:
                 items, supp_docs = [], []
                 if event_id:
                     import urllib.request, json
-                    _t_evt = _sc_time.time()
+                    _t_evt = time.time()
                     evt_url = f"{surprise_config.api_base}/Events/{event_id}"
                     evt_req = urllib.request.Request(evt_url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
                     try:
                         with urllib.request.urlopen(evt_req, timeout=10) as evt_resp:
                             evt_data = json.loads(evt_resp.read())
-                        print(f"  [dbg]     Events/{event_id} API call: {_sc_time.time() - _t_evt:.1f}s, agendaId={evt_data.get('agendaId', 0)}")
+                        print(f"  [dbg]     Events/{event_id} API call: {time.time() - _t_evt:.1f}s, agendaId={evt_data.get('agendaId', 0)}")
                         agenda_id = evt_data.get("agendaId", 0)
                         if agenda_id and agenda_id > 0:
                             items, supp_docs = fetch_meeting_items(
@@ -3610,7 +3631,7 @@ async def main() -> int:
                                 body_code, meeting_date,
                             )
                     except Exception as e:
-                        print(f"  [dbg]     Events/{event_id} FAILED ({_sc_time.time() - _t_evt:.1f}s): {e}")
+                        print(f"  [dbg]     Events/{event_id} FAILED ({time.time() - _t_evt:.1f}s): {e}")
 
                 replace_meeting_data_safe(
                     session, body_code, str(event_id), meeting_dict,
@@ -3618,14 +3639,14 @@ async def main() -> int:
                 )
                 total_items += len(items)
                 doc_summary = f" ({len(supp_docs)} doc(s))" if supp_docs else ""
-                print("  [%d/%d] %s %s: %d items synced%s [%.1fs]" % (idx, meeting_count, event_id, meeting_date, len(items), doc_summary, _sc_time.time() - _t_mtg))
+                print("  [%d/%d] %s %s: %d items synced%s [%.1fs]" % (idx, meeting_count, event_id, meeting_date, len(items), doc_summary, time.time() - _t_mtg))
             except Exception as e:
                 import traceback
                 print("Failed Surprise CivicClerk meeting %s: %s" % (event_id, e))
         session.close()
-        _total_elapsed = _sc_time.time() - _surprise_t0
+        _total_elapsed = time.time() - _surprise_t0
         print("Synced %d Surprise CivicClerk items across %d meeting(s) [%ds total]" % (total_items, meeting_count, _total_elapsed))
-        print(f"  [dbg] Surprise CivicClerk done in {_total_elapsed:.0f}s (loop phase: {_sc_time.time() - _t_loop_start:.1f}s)")
+        print(f"  [dbg] Surprise CivicClerk done in {_total_elapsed:.0f}s (loop phase: {time.time() - _t_loop_start:.1f}s)")
         return 0
 
     # ── Tucson sync (via OnBase) ──
@@ -3684,7 +3705,7 @@ async def main() -> int:
                     MeetingModel.meeting_id == meeting_id,
                 )
             ).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not args.force:
+            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
                 print(f"  [{idx}/{meeting_count}] {meeting_id} {meeting_date}: already synced")
                 total_items += existing.item_count_actual or 0
                 continue
@@ -3795,7 +3816,7 @@ async def main() -> int:
                     MeetingModel.meeting_id == meeting_id,
                 )
             ).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not args.force:
+            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
                 print(f"  [{idx}/{meeting_count}] {meeting_id} {meeting_date}: already synced")
                 total_items += existing.item_count_actual or 0
                 continue
@@ -3902,7 +3923,7 @@ async def main() -> int:
                     MeetingModel.meeting_id == meeting_id,
                 )
             ).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not args.force:
+            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
                 print(f"  [{idx}/{meeting_count}] {meeting_id} {meeting_date}: already synced")
                 continue
 
@@ -3986,7 +4007,7 @@ async def main() -> int:
                     MeetingModel.meeting_id == meeting_id,
                 )
             ).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not args.force:
+            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
                 print(f"  [{idx}/{meeting_count}] {meeting_id} {meeting_date}: already synced (items={existing.item_count_actual})")
                 continue
 
@@ -4086,7 +4107,7 @@ async def main() -> int:
                     MeetingModel.meeting_id == str(event_id),
                 )
             ).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not args.force:
+            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
                 print("  [%d/%d] %s %s: already synced, %d items" % (idx, meeting_count, event_id, meeting_date, existing.item_count_actual or 0))
                 total_items += existing.item_count_actual or 0
                 continue
@@ -4188,7 +4209,7 @@ async def main() -> int:
                     MeetingModel.meeting_id == meeting_id,
                 )
             ).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and not args.force:
+            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
                 print(f"  [{idx}/{meeting_count}] {meeting_id} {meeting_date}: already synced (items={existing.item_count_actual})")
                 continue
 
@@ -4440,47 +4461,11 @@ async def main() -> int:
 
                         # Persist item details (PZ-specific) to database
                         if args.source == "pz":
-                            from db import PZItemDetail, AgendaItem
-                            from sqlalchemy import select
+                            from db.pz_details import persist_pz_item_details
                             try:
-                                # Delete old details for this meeting
-                                session.execute(
-                                    PZItemDetail.__table__.delete().where(
-                                        PZItemDetail.body == meeting.body,
-                                        PZItemDetail.meeting_id == meeting.meeting_id,
-                                    )
+                                persist_pz_item_details(
+                                    session, meeting.body, meeting.meeting_id, items
                                 )
-                                # Look up agenda item DB IDs after persist
-                                db_items = {
-                                    row.agenda_item_number: row.id
-                                    for row in session.execute(
-                                        select(AgendaItem.id, AgendaItem.agenda_item_number)
-                                        .where(
-                                            AgendaItem.body == meeting.body,
-                                            AgendaItem.meeting_id == meeting.meeting_id,
-                                        )
-                                    ).all()
-                                }
-                                # Insert new details
-                                for it in items:
-                                    if it.get("pz_project_name"):
-                                        item_num = int(it.get("agenda_item_number", 0))
-                                        detail = PZItemDetail(
-                                            body=meeting.body,
-                                            agenda_item_id=db_items.get(item_num),
-                                            meeting_id=meeting.meeting_id,
-                                            agenda_item_number=item_num,
-                                            case_number=it.get("case_number", ""),
-                                            district=it.get("pz_district"),
-                                            project_name=it.get("pz_project_name"),
-                                            applicant=it.get("pz_applicant"),
-                                            request=it.get("pz_request"),
-                                            location=it.get("pz_location"),
-                                            recommendation=it.get("pz_recommendation"),
-                                            presented_by=it.get("pz_presented_by"),
-                                            staff_report_url=it.get("staff_report_url"),
-                                        )
-                                        session.add(detail)
                                 session.commit()
                             except Exception as pz_err:
                                 print(f"    PZ detail persist skipped: {pz_err}")

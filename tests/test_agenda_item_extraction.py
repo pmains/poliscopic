@@ -12,15 +12,16 @@ from pathlib import Path
 # Add scripts directory so we can import the scraper module
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from agenda_scraper import (
-    _clean_html_text,
+# ``scripts/agenda_scraper.py`` was split into ``scripts/scraper/common/*`` by
+# the 2026 scraper restructure; import from where the code now lives.
+from scraper.common.agenda_items import (
     _clean_lnk_title,
-    _find_item_tables,
     _extract_lnk_from_table,
-    _extract_c_number,
-    parse_c_number_parts,
+    _find_item_tables,
     parse_agenda_items_from_html,
 )
+from scraper.common.html_utils import _clean_html_text
+from scraper.common.utils import _extract_c_number, parse_c_number_parts
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "4667_formal_2026-04-22.html"
 MEETING_ID = "4667"

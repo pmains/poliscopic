@@ -40,6 +40,41 @@ for _p in (_REPO_ROOT, _SCRIPTS_DIR):
 
 from db.core import get_engine
 
+from scripts.entities.resolver_accounting import (
+    SubphaseProposals,
+    aggregate_proposals,
+    is_canonical_emission,
+    subphase_result,
+    seal_resolver_receipt,
+)
+from scripts.entities.resolver_persistence import (
+    apply_composite_splits,
+    merge_entities,
+)
+from scripts.entities.resolver_proposals import (
+    build_composite_ops,
+    build_name_variation_candidates,
+    type_priority,
+)
+from scripts.entities.resolver_similarity import (
+    acronym_match as _acronym_match,
+)
+from scripts.entities.resolver_similarity import (
+    make_block_key as _make_block_key,
+)
+from scripts.entities.resolver_similarity import (
+    substring_match as _substring_match,
+)
+from scripts.entities.resolver_similarity import (
+    token_normalize as _token_normalize,
+)
+from scripts.entities.resolver_similarity import (
+    token_set_similarity as _token_set_similarity,
+)
+from scripts.entities.resolver_similarity import (
+    token_sort_similarity as _token_sort_similarity,
+)
+
 log = logging.getLogger("resolver")
 WATERMARK_TABLE = "_resolver_watermark"
 BATCH_SIZE = 100
@@ -61,23 +96,24 @@ PHASE1_SAME_NAME_DUPES = """
       AND e2.canonical_entity_id IS NULL
 """
 
-TYPE_PRIORITY = {"person": 0, "developer": 1, "planning_firm": 1,
-                 "law_firm": 1, "organization": 2, "utility": 3,
-                 "advocacy_group": 3, "case": 4, "parcel": 5,
-                 "address": 6}
+#: The ontology values a composite split may emit.  The organisation carries
+#: the weakest truthful role ("mentioned") and no relationship is emitted.
+SPLIT_EMITTED_VALUES = (
+    ("entity_type", "person"),
+    ("entity_type", "organization"),
+    ("role", "mentioned"),
+)
 
 
-def _type_priority(t: str) -> int:
-    return TYPE_PRIORITY.get(t, 99)
-
-
-def _resolve_type_conflicts(conn, dry_run: bool = False, verbose: bool = False) -> dict:
+def _resolve_type_conflicts(conn, dry_run: bool = False, verbose: bool = False,
+             validator=None) -> dict:
     """Merge same-normalized-name entities where one has the wrong type."""
     rows = conn.execute(text(PHASE1_SAME_NAME_DUPES)).fetchall()
     if verbose:
         log.info("  Phase 1: %d type-conflict pairs found", len(rows))
 
     merged = 0
+    committed = 0
     for r in rows:
         id1, type1, cnt1 = r[0], r[2], r[3]
         id2, type2, cnt2 = r[4], r[6], r[7]
@@ -85,8 +121,8 @@ def _resolve_type_conflicts(conn, dry_run: bool = False, verbose: bool = False) 
         # If the higher-priority entity has <= 2 mentions and the lower-priority
         # has significantly more, the lower-priority (more specific) entity wins.
         # This prevents junk "person" entries from absorbing real organization records.
-        p1 = _type_priority(type1)
-        p2 = _type_priority(type2)
+        p1 = type_priority(type1)
+        p2 = type_priority(type2)
 
         if p1 < p2:
             # type1 is higher priority (lower number)
@@ -107,140 +143,37 @@ def _resolve_type_conflicts(conn, dry_run: bool = False, verbose: bool = False) 
             else:
                 survivor, victim = id2, id1
 
+        # Classified exactly once.  A conflicting pair is a real merge, so it is
+        # a would-update in dry mode too; dry mode simply writes nothing.
+        merged += 1
         if dry_run:
-            log.info("    Would merge %d(%s) → %d(%s)", victim, victim_type, survivor, survivor_type)
-            merged += 1
+            # The pair is (id1, type1) vs (id2, type2); report whichever type
+            # belongs to the victim and the survivor actually chosen.
+            victim_type = type2 if victim == id2 else type1
+            survivor_type = type1 if survivor == id1 else type2
+            log.info("    Would merge %d(%s) → %d(%s)",
+                     victim, victim_type, survivor, survivor_type)
             continue
 
-        _merge(conn, victim, survivor, "type_conflict", 0.99)
-        merged += 1
+        merge_entities(conn, victim, survivor, "type_conflict", 0.99)
+        committed += 1
 
-    return {"phase1_type_conflicts": merged}
-
-
-def _merge(conn, victim_id: int, survivor_id: int,
-           method: str, confidence: float) -> None:
-    """Re-point all references from victim to survivor, then mark victim."""
-    now = datetime.now(timezone.utc)
-
-    # Re-point entity_mentions
-    conn.execute(
-        text("""
-            UPDATE entity_mentions
-            SET entity_id = :survivor
-            WHERE entity_id = :victim
-              AND NOT EXISTS (
-                  SELECT 1 FROM entity_mentions em2
-                  WHERE em2.entity_id = :survivor
-                    AND em2.source_type = entity_mentions.source_type
-                    AND em2.source_id = entity_mentions.source_id
-                    AND em2.role_in_context IS NOT DISTINCT FROM entity_mentions.role_in_context
-              )
-        """),
-        {"survivor": survivor_id, "victim": victim_id},
-    )
-
-    # Re-point entity_relationships (from_entity_id)
-    conn.execute(
-        text("""
-            UPDATE entity_relationships
-            SET from_entity_id = :survivor
-            WHERE from_entity_id = :victim
-              AND NOT EXISTS (
-                  SELECT 1 FROM entity_relationships er2
-                  WHERE er2.from_entity_id = :survivor
-                    AND er2.relationship = entity_relationships.relationship
-                    AND er2.to_entity_id = entity_relationships.to_entity_id
-                    AND er2.provenance_type IS NOT DISTINCT FROM entity_relationships.provenance_type
-                    AND er2.provenance_id IS NOT DISTINCT FROM entity_relationships.provenance_id
-              )
-        """),
-        {"survivor": survivor_id, "victim": victim_id},
-    )
-
-    # Re-point entity_relationships (to_entity_id)
-    conn.execute(
-        text("""
-            UPDATE entity_relationships
-            SET to_entity_id = :survivor
-            WHERE to_entity_id = :victim
-              AND NOT EXISTS (
-                  SELECT 1 FROM entity_relationships er2
-                  WHERE er2.from_entity_id = entity_relationships.from_entity_id
-                    AND er2.relationship = entity_relationships.relationship
-                    AND er2.to_entity_id = :survivor
-                    AND er2.provenance_type IS NOT DISTINCT FROM entity_relationships.provenance_type
-                    AND er2.provenance_id IS NOT DISTINCT FROM entity_relationships.provenance_id
-              )
-        """),
-        {"survivor": survivor_id, "victim": victim_id},
-    )
-
-    # Accumulate mention_count on survivor
-    victim_cnt = conn.execute(
-        text("SELECT mention_count FROM entities WHERE id = :vid"),
-        {"vid": victim_id},
-    ).scalar() or 0
-    conn.execute(
-        text("""
-            UPDATE entities
-            SET mention_count = mention_count + :vcnt,
-                last_seen_at = GREATEST(last_seen_at, (
-                    SELECT last_seen_at FROM entities WHERE id = :vid
-                )),
-                updated_at = :now
-            WHERE id = :sid
-        """),
-        {"vcnt": victim_cnt, "vid": victim_id, "sid": survivor_id, "now": now},
-    )
-
-    # Mark victim as merged
-    conn.execute(
-        text("""
-            UPDATE entities
-            SET canonical_entity_id = :sid,
-                resolution_status = 'merged',
-                resolution_confidence = :conf,
-                resolution_method = :method,
-                resolved_at = :now,
-                updated_at = :now
-            WHERE id = :vid
-        """),
-        {"sid": survivor_id, "vid": victim_id, "conf": confidence,
-         "method": method, "now": now},
-    )
-
-    # Mark survivor as resolved
-    conn.execute(
-        text("""
-            UPDATE entities
-            SET resolution_status = 'canonical',
-                resolution_method = :method,
-                resolved_at = :now,
-                updated_at = :now
-            WHERE id = :sid
-              AND resolution_status = 'unresolved'
-        """),
-        {"sid": survivor_id, "method": method, "now": now},
+    return subphase_result(
+        "type_conflict",
+        SubphaseProposals(
+            subphase="type_conflict",
+            would_update=merged,
+            committed=0 if dry_run else committed,
+            merged_entities=0 if dry_run else committed,
+        ),
+        phase1_type_conflicts=merged,
     )
 
 
 # ── Phase 2: Composite Entity Split ────────────────────────────────────────
 
-COMPOSITE_PATTERN = re.compile(
-    r"^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}),\s+(.+)$"
-)
-
-PHASE2_COMPOSITES = """
-    SELECT id, name, normalized_name, entity_type
-    FROM entities
-    WHERE resolution_status = 'unresolved'
-      AND entity_type IN ('organization', 'person')
-    ORDER BY id
-"""
-
-
-def _resolve_composites(conn, dry_run: bool = False, verbose: bool = False) -> dict:
+def _resolve_composites(conn, dry_run: bool = False, verbose: bool = False,
+             validator=None) -> dict:
     """Find and split composite 'Person, Firm' entities."""
     # Load entity cache once
     cache_rows = conn.execute(
@@ -250,360 +183,74 @@ def _resolve_composites(conn, dry_run: bool = False, verbose: bool = False) -> d
     if verbose:
         log.info("  Phase 2: loaded %d entities into cache", len(entity_cache))
 
-    rows = conn.execute(text(PHASE2_COMPOSITES)).fetchall()
+    # Phase A: identify every composite split proposal.  Proposal building
+    # is identical in dry and live runs (see resolver_proposals), so a dry
+    # run describes exactly what a live run would write.
+    ops = build_composite_ops(conn)
     if verbose:
-        log.info("  Phase 2: scanning %d entities for composite patterns", len(rows))
+        log.info("  Phase 2: %d composite split proposal(s)", len(ops))
 
-    ROLE_ONLY_ALL = {"agent", "agents", "rls", "esq", "jr", "sr", "pe",
-                     "pls", "pc", "plc", "llc", "inc", "iii"}
-    TITLE_WORDS = {"councilmember", "chairperson", "chairman", "chairwoman",
-                   "mayor", "vice mayor", "councilman", "councilwoman",
-                   "commissioner", "vice chair", "proposed request"}
+    # Validate the ontology values this split may emit BEFORE any write.  A
+    # comma proves only that a person and an organisation were named in one
+    # occurrence: it is not affiliation evidence, so no relationship is
+    # emitted and no predicate is inferred.  Non-canonical values are refused
+    # rather than written.
+    refused = tuple(
+        f"{category}:{value}"
+        for category, value in SPLIT_EMITTED_VALUES
+        if not is_canonical_emission(category, value)
+    )
 
-    # Phase A: Identify all composites and collect operations
-    ops = []  # list of (name, person_name, org_name, person_norm, org_norm, eid)
-
-    for r in rows:
-        eid = int(r[0])
-        name = str(r[1] or "")
-
-        m = COMPOSITE_PATTERN.match(name)
-        if not m:
-            continue
-
-        person_name = m.group(1).strip()
-        org_name = m.group(2).strip()
-        if not person_name or not org_name:
-            continue
-
-        # Skip role-only suffixes
-        org_check = re.sub(r"[^a-zA-Z ]", " ", org_name.lower()).strip()
-        org_all_tokens = org_check.split()
-        if org_all_tokens and all(t in ROLE_ONLY_ALL for t in org_all_tokens):
-            continue
-
-        # Skip title-like person names
-        person_lower = re.sub(r"[^a-zA-Z ]", " ", person_name.lower()).strip()
-        if person_lower in TITLE_WORDS or person_lower.startswith("proposed"):
-            continue
-
-        # Skip "Jr., X"
-        if re.search(r'\bjr\.?$', person_name, re.I):
-            continue
-
-        if dry_run:
-            if verbose:
-                log.info("    Composite: '%s' → person='%s', org='%s'", name, person_name, org_name)
-            continue
-
-        person_norm = re.sub(r"\s+", " ", person_name.lower().strip())
-        org_norm = re.sub(r"\s+", " ", org_name.lower().strip())
-        ops.append((name, person_name, org_name, person_norm, org_norm, eid))
-
-    if dry_run:
-        return {"phase2_composites": len(ops)}
-
-    # Phase B: Bulk-resolve/create entities
-    now = datetime.now(timezone.utc)
-
-    # Collect which entity keys we need to look up
-    new_entities = []  # list of (entity_type, name, norm)
-
-    for name, person_name, org_name, person_norm, org_norm, eid in ops:
-        pkey = (person_norm, "person")
-        okey = (org_norm, "organization")
-        if pkey not in entity_cache:
-            new_entities.append(("person", person_name, person_norm))
-            # Placeholder in cache so we don't create duplicate
-            entity_cache[pkey] = -(len(new_entities))
-        if okey not in entity_cache:
-            # Also check if org exists under any type
-            found = False
-            for cached_key, cached_id in entity_cache.items():
-                if cached_key[0] == org_norm:
-                    okey = cached_key
-                    found = True
-                    break
-            if not found:
-                new_entities.append(("organization", org_name, org_norm))
-                entity_cache[okey] = -(len(new_entities))
-
-    # Bulk insert new entities (in batches of 50 to avoid oversized queries)
-    new_id_offset = 0
-    BATCH_SIZE = 50
-    if new_entities:
-        for batch_start in range(0, len(new_entities), BATCH_SIZE):
-            batch = new_entities[batch_start:batch_start + BATCH_SIZE]
-            val_parts = []
-            params = {}
-            for bi, (etype, ename, enorm) in enumerate(batch):
-                i = batch_start + bi
-                val_parts.append(f"(:et{i}, :name{i}, :nn{i})")
-                params[f"et{i}"] = etype
-                params[f"name{i}"] = ename
-                params[f"nn{i}"] = enorm
-            val_clause = ", ".join(val_parts)
-            result_rows = conn.execute(
-                text(f"""
-                    INSERT INTO entities
-                        (entity_type, name, normalized_name, is_government,
-                         first_seen_at, last_seen_at, mention_count,
-                         resolution_status, created_at, updated_at)
-                    SELECT v.et, v.name, v.nn, False,
-                           :now, :now, 1, 'canonical', :now, :now
-                    FROM (VALUES {val_clause}) AS v(et, name, nn)
-                    RETURNING normalized_name, entity_type, id
-                """),
-                {**params, "now": now},
-            ).fetchall()
-            for r in result_rows:
-                key = (str(r[0]), str(r[1]))
-                entity_cache[key] = int(r[2])
-                new_id_offset += 1
-
-    # Phase C: Bulk-create relationships, re-point mentions, mark merged
-    mention_updates = []
-    mention_inserts = []
-    relationship_inserts = []
-    entity_merges = []
-
-    for name, person_name, org_name, person_norm, org_norm, eid in ops:
-        pkey = (person_norm, "person")
-        person_id = entity_cache.get(pkey)
-        # Try any type for org
-        okey = (org_norm, "organization")
-        org_id = entity_cache.get(okey)
-        if not org_id:
-            # Check other types
-            for ck, cid in entity_cache.items():
-                if ck[0] == org_norm:
-                    org_id = cid
-                    okey = ck
-                    break
-
-        if not person_id or not org_id:
-            if verbose:
-                log.warning("    Could not resolve IDs for '%s' (person=%s, org=%s)",
-                          name, person_id, org_id)
-            continue
-
-        relationship_inserts.append({
-            "from_entity_id": person_id, "to_entity_id": org_id,
-            "relationship": "HAS_APPLICANT",
-            "provenance_type": "entity_resolution", "provenance_id": eid,
-            "source_label": f"Split from composite: {name[:100]}",
-            "edge_kind": "relational", "confidence": 0.8,
-        })
-        mention_updates.append({"pid": person_id, "cid": eid})
-        mention_inserts.append({
-            "oid": org_id, "oname": org_name[:500], "pid": person_id,
-        })
-        entity_merges.append({"pid": person_id, "cid": eid})
-
-    # Execute bulk operations
-    if relationship_inserts:
-        val_parts = []
-        params = {}
-        for i, row in enumerate(relationship_inserts):
-            val_parts.append(
-                f"(:fe{i}, :te{i}, 'HAS_APPLICANT', 'entity_resolution',"
-                f" :pid{i}, :sl{i}, 'relational', 0.8, :now)"
-            )
-            params[f"fe{i}"] = row["from_entity_id"]
-            params[f"te{i}"] = row["to_entity_id"]
-            params[f"pid{i}"] = row["provenance_id"]
-            params[f"sl{i}"] = row["source_label"][:200]
-        params["now"] = now
-    if relationship_inserts:
-        # Per-row insert — avoids VALUES type inference issues
-        for row in relationship_inserts:
-            conn.execute(
-                text("""
-                    INSERT INTO entity_relationships
-                        (from_entity_id, to_entity_id, relationship,
-                         provenance_type, provenance_id, source_label,
-                         edge_kind, confidence, created_at)
-                    VALUES (:fe, :te, 'HAS_APPLICANT', 'entity_resolution',
-                            :pid, :sl, 'relational', 0.8, now())
-                    ON CONFLICT DO NOTHING
-                """),
-                {"fe": row["from_entity_id"], "te": row["to_entity_id"],
-                 "pid": row["provenance_id"], "sl": row["source_label"][:200]},
-            )
-
-    if mention_updates:
-        # Batch mention UPDATE
-        BATCH_SIZE = 50
-        for batch_start in range(0, len(mention_updates), BATCH_SIZE):
-            batch = mention_updates[batch_start:batch_start + BATCH_SIZE]
-            val_parts = []
-            params = {}
-            for bi, row in enumerate(batch):
-                i = batch_start + bi
-                val_parts.append(f"(:pid{i}, :cid{i})")
-                params[f"pid{i}"] = row["pid"]
-                params[f"cid{i}"] = row["cid"]
-            val_clause = ", ".join(val_parts)
-            conn.execute(
-                text(f"""
-                    UPDATE entity_mentions em
-                    SET entity_id = v.pid
-                    FROM (VALUES {val_clause}) AS v(pid, cid)
-                    WHERE em.entity_id = v.cid
-                      AND NOT EXISTS (
-                          SELECT 1 FROM entity_mentions em2
-                          WHERE em2.entity_id = v.pid
-                            AND em2.source_type = em.source_type
-                            AND em2.source_id = em.source_id
-                            AND em2.role_in_context IS NOT DISTINCT FROM em.role_in_context
-                      )
-                """),
-                params,
-            )
-
-        # Batch mention INSERT (INSERT...SELECT with VALUES-driven joins)
-        for batch_start in range(0, len(mention_inserts), BATCH_SIZE):
-            batch = mention_inserts[batch_start:batch_start + BATCH_SIZE]
-            val_parts = []
-            params = {}
-            for bi, row in enumerate(batch):
-                i = batch_start + bi
-                val_parts.append(f"(:oid{i}, :oname{i}, :pid{i})")
-                params[f"oid{i}"] = row["oid"]
-                params[f"oname{i}"] = row["oname"][:500]
-                params[f"pid{i}"] = row["pid"]
-            params["now"] = now
-            val_clause = ", ".join(val_parts)
-            conn.execute(
-                text(f"""
-                    INSERT INTO entity_mentions
-                        (entity_id, source_type, source_id, mention_text,
-                         context_snippet, confidence, extracted_by, role_in_context, created_at)
-                    SELECT DISTINCT ON (v.oid, em.source_type, em.source_id)
-                           v.oid, em.source_type, em.source_id, v.oname,
-                           em.context_snippet, 70, 'resolver', 'firm', :now
-                    FROM (VALUES {val_clause}) AS v(oid, oname, pid)
-                    JOIN entity_mentions em ON em.entity_id = v.pid
-                        AND em.source_type = 'agenda_item'
-                    WHERE NOT EXISTS (
-                        SELECT 1 FROM entity_mentions em2
-                        WHERE em2.entity_id = v.oid
-                          AND em2.source_type = em.source_type
-                          AND em2.source_id = em.source_id
-                    )
-                """),
-                params,
-            )
-
-    if entity_merges:
-        val_parts = []
-        params = {}
-        for i, row in enumerate(entity_merges):
-            val_parts.append(f"(:pid{i}, :cid{i})")
-            params[f"pid{i}"] = row["pid"]
-            params[f"cid{i}"] = row["cid"]
-        val_clause = ", ".join(val_parts)
-        conn.execute(
-            text(f"""
-                UPDATE entities
-                SET canonical_entity_id = v.pid,
-                    resolution_status = 'merged',
-                    resolution_confidence = 0.95,
-                    resolution_method = 'composite_split',
-                    resolved_at = :now,
-                    updated_at = :now
-                FROM (VALUES {val_clause}) AS v(pid, cid)
-                WHERE entities.id = v.cid
-            """),
-            {**params, "now": now},
+    if refused:
+        log.warning(
+            "  Phase 2: refusing %d composite split(s) — non-canonical emission: %s",
+            len(ops), ", ".join(refused),
+        )
+        return subphase_result(
+            "composite_split",
+            SubphaseProposals(
+                subphase="composite_split",
+                unresolved=len(ops),
+                refused_values=refused,
+            ),
+            phase2_composites=len(ops),
         )
 
-    return {"phase2_composites": len(ops)}
+    from scripts.kg import registries as _registries
+
+    outcome = apply_composite_splits(
+        conn, ops, entity_cache, dry_run=dry_run, validator=validator,
+        model_version=_registries.MODEL_VERSION,
+    )
+    mutations = outcome["would_insert"] + outcome["would_update"]
+    return subphase_result(
+        "composite_split",
+        SubphaseProposals(
+            subphase="composite_split",
+            would_insert=outcome["would_insert"],
+            would_update=outcome["would_update"],
+            unresolved=outcome["unresolved"],
+            committed=0 if dry_run else mutations,
+            created_entities=0 if dry_run else outcome["created_entities"],
+            merged_entities=0 if dry_run else outcome["merged_entities"],
+            emitted_values=SPLIT_EMITTED_VALUES,
+        ),
+        phase2_composites=len(ops),
+    )
+
 
 
 # ── Phase 3: Name Variation Matching ───────────────────────────────────────
 
-PHASE3_ORGS = """
-    SELECT id, name, normalized_name, entity_type, resolution_block_key
-    FROM entities
-    WHERE resolution_status = 'unresolved'
-      AND entity_type IN ('organization', 'developer', 'planning_firm', 'law_firm')
-    ORDER BY normalized_name
-"""
-
-
-def _token_normalize(s: str) -> str:
-    """Remove punctuation, normalize whitespace, lowercase."""
-    s = re.sub(r"[^a-z0-9\s]", " ", s.lower())
-    return re.sub(r"\s+", " ", s).strip()
-
-
-def _token_set_similarity(a: str, b: str) -> float:
-    """Jaccard similarity on token sets."""
-    ta = set(_token_normalize(a).split())
-    tb = set(_token_normalize(b).split())
-    if not ta or not tb:
-        return 0.0
-    return len(ta & tb) / len(ta | tb)
-
-
-def _token_sort_similarity(a: str, b: str) -> float:
-    """Check if sorted-token strings match (same words, different order)."""
-    ta = sorted(_token_normalize(a).split())
-    tb = sorted(_token_normalize(b).split())
-    return 1.0 if ta == tb and ta else 0.0
-
-
-def _substring_match(a: str, b: str) -> float:
-    """Score 0.9 if one name is a clear substring of the other."""
-    na = _token_normalize(a)
-    nb = _token_normalize(b)
-    if len(na) < 3 or len(nb) < 3:
-        return 0.0
-    # One is fully contained in the other (e.g., "Vertical Bridge" in
-    # "Annmarie Beckett, Vertical Bridge/Clear Blue Services")
-    if na in nb or nb in na:
-        # But only if the longer name isn't drastically longer
-        ratio = min(len(na), len(nb)) / max(len(na), len(nb))
-        if ratio > 0.25:
-            return 0.85
-    return 0.0
-
-
-def _acronym_match(a: str, b: str) -> float:
-    """Score if acronym of one matches the other (e.g., 'JCJ' == 'JCJ Services')."""
-    na = _token_normalize(a)
-    nb = _token_normalize(b)
-
-    def acronym(s: str) -> str:
-        return "".join(w[0] for w in s.split() if w)
-
-    acr_a = acronym(na)
-    acr_b = acronym(nb)
-    if acr_a and acr_b and (acr_a == acr_b or acr_a in nb or acr_b in na):
-        # Check it's not just a single-letter match
-        if len(acr_a) >= 2:
-            return 0.75
-    return 0.0
-
-
-def _resolve_name_variations(conn, dry_run: bool = False, verbose: bool = False) -> dict:
+def _resolve_name_variations(conn, dry_run: bool = False, verbose: bool = False,
+             validator=None) -> dict:
     """Block and merge similar organization names."""
-    rows = conn.execute(text(PHASE3_ORGS)).fetchall()
+    entities = build_name_variation_candidates(conn)
     if verbose:
-        log.info("  Phase 3: %d organization entities to scan", len(rows))
-
-    entities = []
-    for r in rows:
-        entities.append({
-            "id": int(r[0]),
-            "name": str(r[1] or ""),
-            "norm": str(r[2] or ""),
-            "type": str(r[3] or ""),
-            "block": str(r[4] or ""),
-        })
+        log.info("  Phase 3: %d organization entities to scan", len(entities))
 
     merged = 0
+    committed = 0
     compared = 0
 
     for i in range(len(entities)):
@@ -665,43 +312,25 @@ def _resolve_name_variations(conn, dry_run: bool = False, verbose: bool = False)
                     log.info("    MERGE (%.2f): '%s'(%d) ← '%s'(%d)",
                              score, survivor_name, survivor, victim_name, victim)
 
-                _merge(conn, victim, survivor, "name_variation", score)
+                merge_entities(conn, victim, survivor, "name_variation", score)
                 merged += 1
+                committed += 1
                 e2["_dead"] = True
 
-    return {"phase3_name_variations": merged, "compared": compared}
-
-
-def _make_block_key(a: str, b: str) -> str | None:
-    """Determine if two names should be compared. Returns block key or None."""
-    na = _token_normalize(a)
-    nb = _token_normalize(b)
-    if na == nb:
-        return f"exact:{na}"
-
-    # Same first token (usually the most distinctive: "Hitt" ≈ "Huitt")
-    a_tokens = na.split()
-    b_tokens = nb.split()
-    if a_tokens and b_tokens and a_tokens[0] == b_tokens[0]:
-        return f"first:{a_tokens[0]}"
-
-    # Same last token
-    if len(a_tokens) > 0 and len(b_tokens) > 0 and a_tokens[-1] == b_tokens[-1]:
-        return f"last:{a_tokens[-1]}"
-
-    # Token subset — one is wholly contained in the other
-    set_a, set_b = set(a_tokens), set(b_tokens)
-    if set_a and set_b and (set_a <= set_b or set_b <= set_a):
-        return f"subset:{min(len(set_a), len(set_b))}"
-
-    # Acronym match — first letters of each token
-    def acronym(s: str) -> str:
-        return "".join(w[0] for w in s.split() if w)
-    acr_a, acr_b = acronym(na), acronym(nb)
-    if acr_a and acr_b and (acr_a == acr_b or acr_a in nb or acr_b in na):
-        return f"acr:{acr_a}"
-
-    return None
+    # A name-variation merge re-points existing rows and marks the victim; it
+    # introduces no new ontology values, so there is nothing to validate here.
+    return subphase_result(
+        "name_variation",
+        SubphaseProposals(
+            subphase="name_variation",
+            would_update=merged,
+            committed=0 if dry_run else committed,
+            merged_entities=0 if dry_run else committed,
+            compared=compared,
+        ),
+        phase3_name_variations=merged,
+        compared=compared,
+    )
 
 
 # ── Orchestrator ───────────────────────────────────────────────────────────
@@ -744,7 +373,20 @@ def run_resolver(engine, phases: list[str] | None = None,
             WHERE resolution_status IS NULL OR resolution_status = 'unresolved'
         """)).scalar()
 
+    from scripts.kg.emission import EmissionValidator
+    from scripts.kg.producer_versions import declared_producer_version
+
+    # One validator for the whole phase: every emitted bundle is validated
+    # through this single canonical boundary, and it is sealed into exactly
+    # one resolver receipt at the end.
+    validator = EmissionValidator(
+        "resolver", declared_producer_version("resolver") or "unknown",
+        dry_run=dry_run,
+    )
+    validator.start_batch()
+
     target_phases = phases or PHASE_ORDER
+    subphase_proposals: list[SubphaseProposals] = []
     for phase_name in target_phases:
         if phase_name not in PHASES:
             log.warning("  Unknown phase: %s", phase_name)
@@ -761,7 +403,11 @@ def run_resolver(engine, phases: list[str] | None = None,
         try:
             with engine.begin() as conn:
                 phase_fn = PHASES[phase_name][0]
-                phase_results = phase_fn(conn, dry_run=dry_run, verbose=verbose)
+                phase_results = phase_fn(conn, dry_run=dry_run,
+                                         verbose=verbose, validator=validator)
+                proposals = phase_results.pop("_proposals", None)
+                if proposals is not None:
+                    subphase_proposals.append(proposals)
                 if not dry_run:
                     conn.execute(
                         text(f"""
@@ -778,6 +424,32 @@ def run_resolver(engine, phases: list[str] | None = None,
             if not force:
                 raise
 
+    errors = results.get("errors") or []
+    if errors:
+        validator.fail("; ".join(
+            f"{err['phase']}: {err['error']}" for err in errors))
+        results["validation_receipt"] = validator.seal().serialize()
+    else:
+        results["validation_receipt"] = seal_resolver_receipt(
+            validator, subphase_proposals, dry_run=dry_run)
+    # Per-subphase truth is preserved rather than collapsed into the total.
+    results["subphase_accounting"] = [
+        {
+            "subphase": item.subphase,
+            "proposed": item.proposed,
+            "would_insert": item.would_insert,
+            "would_update": item.would_update,
+            "replay_noop": item.replay_noop,
+            "unresolved": item.unresolved,
+            "committed": item.committed,
+            "created_entities": item.created_entities,
+            "merged_entities": item.merged_entities,
+            "compared": item.compared,
+            "refused_values": list(item.refused_values),
+            "emitted_values": [list(v) for v in item.emitted_values],
+        }
+        for item in subphase_proposals
+    ]
     return results
 
 

@@ -3,20 +3,24 @@
 extract_results_pdfs.py — Download and extract text from Phoenix AEM result PDFs.
 
 Processes all meeting records with meeting_type='Result' that don't yet have
-text extracted.  Downloads the PDF, runs pdftotext, and stores the result
-as a SupportingDocument record with text_content.
+text extracted. Downloads the PDF, preserves native/OCR word geometry in an
+immutable layout artifact, and stores compatible retained text in a
+SupportingDocument record.
 
 Usage:
     python3 scripts/sync/extract_results_pdfs.py [--batch-size 50] [--max 100]
 """
 
-import sys, os, time, logging, subprocess, tempfile, urllib.request, re
+import sys, os, time, logging, tempfile, urllib.request
+from pathlib import Path
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 sys.path.insert(0, os.path.join(ROOT, "scripts", "scraper"))
 
 from db import get_engine
+from docs.extract import extract_document_safe
+from docs.layout_extract import write_artifact
 from sqlalchemy import text
 from datetime import datetime, timezone
 
@@ -30,8 +34,8 @@ HEADERS = {"User-Agent": USER_AGENT}
 
 CHUNK_SIZE = 8192
 
-def extract_pdf_text(url: str) -> str | None:
-    """Download a PDF and extract text using pdftotext."""
+def extract_pdf_text(url: str) -> tuple[str | None, str | None, dict | None]:
+    """Download a PDF and run the governed layout-preserving cascade."""
     tmp = None
     try:
         req = urllib.request.Request(url, headers=HEADERS)
@@ -44,22 +48,17 @@ def extract_pdf_text(url: str) -> str | None:
                 tmp.write(chunk)
             tmp.close()
 
-        result = subprocess.run(
-            ["pdftotext", "-layout", tmp.name, "-"],
-            capture_output=True, text=True, timeout=60,
-        )
-        if result.returncode != 0:
-            log.warning("pdftotext failed for %s: %s", url, result.stderr[:100])
-            return None
-        text_output = result.stdout
-        if not text_output.strip():
+        text_output, method, artifact = extract_document_safe(Path(tmp.name))
+        if not text_output or not text_output.strip() or not method:
             log.warning("Empty text from %s", url)
-            return None
-        return text_output
+            return None, None, None
+        if artifact:
+            write_artifact(artifact)
+        return text_output, method, artifact
 
     except Exception as e:
         log.warning("Failed to process %s: %s", url, e)
-        return None
+        return None, None, None
     finally:
         if tmp:
             try:
@@ -112,7 +111,7 @@ def main():
 
             log.info("[%d/%d] %s", total_processed + 1, total_processed + len(rows), pdf_url[-60:])
 
-            text_output = extract_pdf_text(pdf_url)
+            text_output, extraction_method, layout_artifact = extract_pdf_text(pdf_url)
 
             with engine.begin() as conn:
                 # Look up the actual meeting_db_id
@@ -148,14 +147,14 @@ def main():
                                 agenda_item_number, document_title, document_url,
                                 document_type, file_name, file_extension,
                                 text_content, text_extracted_at, text_extraction_method,
-                                extraction_duration_ms,
+                                extraction_duration_ms, content_hash,
                                 created_at, updated_at
                             ) VALUES (
                                 :body, :mid, :db_id, :doc_id,
                                 '0', :title, :url,
                                 'Meeting Result', :fname, :ext,
-                                :text, :now, 'pdftotext',
-                                :duration,
+                                :text, :now, :method,
+                                :duration, :content_hash,
                                 :now, :now
                             )
                         """), {
@@ -170,6 +169,11 @@ def main():
                             "text": text_output,
                             "now": now,
                             "duration": 0,
+                            "method": extraction_method,
+                            "content_hash": (
+                                layout_artifact.get("source_pdf_sha256")
+                                if layout_artifact else None
+                            ),
                         })
                         log.info("  Created supporting_doc, %d chars", len(text_output))
                     else:

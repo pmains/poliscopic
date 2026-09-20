@@ -12,13 +12,23 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# ── Production interlock (FAIL CLOSED) ───────────────────────────────────────
+# Refuses before .env is sourced and before any rsync or restart.
+_pi="${POLISCOPIC_PYTHON:-.venv/bin/python}"
+[ -x "$_pi" ] || _pi=python3
+"$_pi" scripts/ops/production_interlock.py check \
+    --operation OP-CODE --entry-point scripts/ops/deploy_code.sh >&2 || {
+    echo "REFUSED: production interlock blocked this deployment." >&2
+    exit 3
+}
+
 set -a; source .env 2>/dev/null || true; set +a
 
 rsync_safe() {
   rsync "$@" || { rc=$?; [ $rc -le 24 ] && return 0 || exit $rc; }
 }
 
-SSH_TARGET="poliscopic@poliscopic.com"
+SSH_TARGET="${POLISCOPIC_DEPLOY_HOST:?Set POLISCOPIC_DEPLOY_HOST}"
 APP_DIR="/opt/poliscopic"
 MODE="${1:-}"  # --execute or empty (dry-run)
 

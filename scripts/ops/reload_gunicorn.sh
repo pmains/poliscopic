@@ -9,7 +9,17 @@
 
 set -euo pipefail
 
-SSH_ROOT="root@poliscopic.com"
+# ── Production interlock (FAIL CLOSED) ───────────────────────────────────────
+# Restarting production gunicorn is a production mutation; refuse before SSH.
+_pi="${POLISCOPIC_PYTHON:-.venv/bin/python}"
+[ -x "$_pi" ] || _pi=python3
+"$_pi" scripts/ops/production_interlock.py check \
+    --operation OP-RESTORE --entry-point scripts/ops/reload_gunicorn.sh >&2 || {
+    echo "REFUSED: production interlock blocked this reload." >&2
+    exit 3
+}
+
+SSH_ROOT="${POLISCOPIC_DEPLOY_ROOT:?Set POLISCOPIC_DEPLOY_ROOT}"
 
 echo "=== Graceful gunicorn reload ==="
 ssh ${SSH_ROOT} "systemctl reload poliscopic" && echo "✅ gunicorn reloaded"

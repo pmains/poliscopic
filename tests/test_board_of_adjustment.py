@@ -4,7 +4,6 @@ Tests cover CLI parsing, meeting discovery, PDF parsing, persistence,
 and regression coverage ensuring BOS and PZ still work.
 """
 
-import importlib.util
 import os
 import re
 import sys
@@ -14,17 +13,11 @@ from pathlib import Path
 
 
 def _load_scraper():
-    scraper_path = Path(__file__).resolve().parents[1] / "scripts" / "agenda_scraper.py"
-    spec = importlib.util.spec_from_file_location("agenda_scraper", scraper_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load scraper from {scraper_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
     scripts_dir = str(Path(__file__).resolve().parents[1] / "scripts")
     if scripts_dir not in sys.path:
         sys.path.insert(0, scripts_dir)
-    spec.loader.exec_module(module)
-    return module
+    import scraper as scraper_package
+    return scraper_package
 
 
 scraper = _load_scraper()

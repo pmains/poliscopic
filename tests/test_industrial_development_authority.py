@@ -5,7 +5,6 @@ containing meeting info, agenda PDF links, and minutes PDF links.
 This is NOT an AgendaCenter source — it's a custom WordPress table.
 """
 
-import importlib.util
 import os
 import re
 import sys
@@ -16,17 +15,11 @@ from typing import Optional
 
 
 def _load_scraper():
-    scraper_path = Path(__file__).resolve().parents[1] / "scripts" / "agenda_scraper.py"
-    spec = importlib.util.spec_from_file_location("agenda_scraper", scraper_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load scraper from {scraper_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
     scripts_dir = str(Path(__file__).resolve().parents[1] / "scripts")
     if scripts_dir not in sys.path:
         sys.path.insert(0, scripts_dir)
-    spec.loader.exec_module(module)
-    return module
+    import scraper as scraper_package
+    return scraper_package
 
 
 scraper = _load_scraper()
@@ -280,7 +273,7 @@ class TestIdaBodyScopedPersistence(unittest.TestCase):
 
 class TestIdaModuleImport(unittest.TestCase):
     def test_ida_module_imports(self):
-        from scraper import ida
+        from scraper.county import ida
         self.assertTrue(hasattr(ida, "extract_ida_meetings"))
         self.assertTrue(hasattr(ida, "parse_ida_meetings_from_html"))
         self.assertTrue(hasattr(ida, "classify_ida_document"))

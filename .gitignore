@@ -132,3 +132,24 @@ static/podcast/
 
 # Internal tool outputs
 tools/
+
+# ── Repository stabilization (2026-09-18) ──────────────────────────────
+# Runtime / private artifacts that must never enter version control.
+# Files are preserved on disk; they are excluded from commits only.
+.server.pid
+*.pid
+
+# Notebooks and spreadsheets (large, machine-local analysis artifacts)
+*.ipynb
+*.xlsx
+.ipynb_checkpoints/
+
+# Stray here-doc artifact (zero-byte)
+PYEOF
+
+# Personal / internal notes (not for source control)
+DREAMS.md
+
+# Runtime image uploads and photo library (binary assets, environment-local)
+static/uploads/
+featured-photos/

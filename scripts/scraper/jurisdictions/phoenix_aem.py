@@ -75,39 +75,39 @@ PAGE_SIZE = 10
 BODY_MAP: list[tuple[re.Pattern, str, str]] = [
     # Village Planning Committees → shared slug
     (re.compile(r"desert\s+view\s+village\s+planning\s+committee", re.I),
-     "phoenix-village-planning", "phoenix-vpc"),
+     "phoenix-village-planning", "phoenix-village-planning"),
     (re.compile(r"central\s+city\s+village\s+planning\s+committee", re.I),
-     "phoenix-village-planning", "phoenix-vpc"),
+     "phoenix-village-planning", "phoenix-village-planning"),
     (re.compile(r"encanto\s+village\s+planning\s+committee", re.I),
-     "phoenix-village-planning", "phoenix-vpc"),
+     "phoenix-village-planning", "phoenix-village-planning"),
     (re.compile(r"paradise\s+valley\s+village\s+planning\s+committee", re.I),
-     "phoenix-village-planning", "phoenix-vpc"),
+     "phoenix-village-planning", "phoenix-village-planning"),
     (re.compile(r"deer\s+valley\s+village\s+planning\s+committee", re.I),
-     "phoenix-village-planning", "phoenix-vpc"),
+     "phoenix-village-planning", "phoenix-village-planning"),
     (re.compile(r"camelback\s+east\s+village\s+planning\s+committee", re.I),
-     "phoenix-village-planning", "phoenix-vpc"),
+     "phoenix-village-planning", "phoenix-village-planning"),
     (re.compile(r"laveen\s+village\s+planning\s+committee", re.I),
-     "phoenix-village-planning", "phoenix-vpc"),
+     "phoenix-village-planning", "phoenix-village-planning"),
     (re.compile(r"rio\s+vista\s+village\s+planning\s+committee", re.I),
-     "phoenix-village-planning", "phoenix-vpc"),
+     "phoenix-village-planning", "phoenix-village-planning"),
     # ── Remaining named VPCs (15 total villages in Phoenix) ──
     (re.compile(r"ahwatukee\s+foothills\s+village\s+planning\s+committee", re.I),
-     "phoenix-village-planning", "phoenix-vpc"),
+     "phoenix-village-planning", "phoenix-village-planning"),
     (re.compile(r"alhambra\s+village\s+planning\s+committee", re.I),
-     "phoenix-village-planning", "phoenix-vpc"),
+     "phoenix-village-planning", "phoenix-village-planning"),
     (re.compile(r"estrella\s+village\s+planning\s+committee", re.I),
-     "phoenix-village-planning", "phoenix-vpc"),
+     "phoenix-village-planning", "phoenix-village-planning"),
     (re.compile(r"maryvale\s+village\s+planning\s+committee", re.I),
-     "phoenix-village-planning", "phoenix-vpc"),
+     "phoenix-village-planning", "phoenix-village-planning"),
     (re.compile(r"north\s+gateway\s+village\s+planning\s+committee", re.I),
-     "phoenix-village-planning", "phoenix-vpc"),
+     "phoenix-village-planning", "phoenix-village-planning"),
     (re.compile(r"north\s+mountain\s+village\s+planning\s+committee", re.I),
-     "phoenix-village-planning", "phoenix-vpc"),
+     "phoenix-village-planning", "phoenix-village-planning"),
     (re.compile(r"south\s+mountain\s+village\s+planning\s+committee", re.I),
-     "phoenix-village-planning", "phoenix-vpc"),
+     "phoenix-village-planning", "phoenix-village-planning"),
     # Catch-all: any remaining "Village Planning Committee" -> phoenix-village-planning
     (re.compile(r"village\s+planning\s+committee", re.I),
-     "phoenix-village-planning", "phoenix-vpc"),
+     "phoenix-village-planning", "phoenix-village-planning"),
 
     # Planning Commission
     (re.compile(r"planning\s+commission", re.I),
@@ -127,31 +127,31 @@ BODY_MAP: list[tuple[re.Pattern, str, str]] = [
 
     # Historic Preservation Commission
     (re.compile(r"historic\s+preservation", re.I),
-     "phoenix-historic-preservation", "phoenix-hp"),
+     "phoenix-historic-preservation", "phoenix-historic-preservation"),
 
     # Human Services Commission
     (re.compile(r"human\s+services\s+commission", re.I),
-     "phoenix-human-services", "phoenix-hs"),
+     "phoenix-human-services", "phoenix-human-services"),
 
     # Human Relations Commission
     (re.compile(r"human\s+relations\s+commission", re.I),
-     "phoenix-human-relations", "phoenix-hr"),
+     "phoenix-human-relations", "phoenix-human-relations"),
 
     # Environmental Quality & Sustainability Commission
     (re.compile(r"environmental\s+quality", re.I),
-     "phoenix-environmental-quality", "phoenix-eq"),
+     "phoenix-environmental-quality", "phoenix-environmental-quality"),
 
     # Mayor's Commission on Disability Issues
     (re.compile(r"mayor'?s?\s+commission\s+on\s+disability", re.I),
-     "phoenix-disability-issues", "phoenix-di"),
+     "phoenix-disability-issues", "phoenix-disability-issues"),
 
     # Women's Commission
     (re.compile(r"women'?s?\s+commission", re.I),
-     "phoenix-womens-commission", "phoenix-wc"),
+     "phoenix-womens-commission", "phoenix-womens-commission"),
 
     # Heritage Commission
     (re.compile(r"heritage\s+commission", re.I),
-     "phoenix-heritage-commission", "phoenix-hc"),
+     "phoenix-heritage-commission", "phoenix-heritage-commission"),
 
     # Design Review Committee
     (re.compile(r"design\s+review\s+committee", re.I),
@@ -167,23 +167,23 @@ BODY_MAP: list[tuple[re.Pattern, str, str]] = [
 
     # License Appeal Board
     (re.compile(r"license\s+appeal\s+board", re.I),
-     "phoenix-license-appeal", "phoenix-la"),
+     "phoenix-license-appeal", "phoenix-license-appeal"),
 
     # Fire Pension Board
     (re.compile(r"fire\s+pension\s+board", re.I),
-     "phoenix-fire-pension", "phoenix-fp"),
+     "phoenix-fire-pension", "phoenix-fire-pension"),
 
     # Police Pension Board
     (re.compile(r"police\s+pension\s+board", re.I),
-     "phoenix-police-pension", "phoenix-pp"),
+     "phoenix-police-pension", "phoenix-police-pension"),
 
     # COPERS Board / Investment Committee
     (re.compile(r"copers|employees'?\s*retirement\s*system", re.I),
-     "phoenix-copers-board", "phoenix-cb"),
+     "phoenix-copers-board", "phoenix-copers-board"),
 
     # License Appeal Board
     (re.compile(r"license\s+appeal", re.I),
-     "phoenix-license-appeal", "phoenix-la"),
+     "phoenix-license-appeal", "phoenix-license-appeal"),
 
     # Subcommittees (that aren't in Legistar)
     (re.compile(r"subcommittee", re.I),
@@ -213,6 +213,39 @@ def is_non_meeting(title: str) -> bool:
     return any(p.search(title) for p in NON_MEETING_PATTERNS)
 
 
+#: Resolved body values that are sentinels, not real bodies.  Checked in one
+#: place so the ordinary search path and the incremental --sync-results path
+#: cannot drift apart.
+SENTINEL_BODY_VALUES = frozenset({"", "__skip__", "skip", "none", "null", "nan"})
+
+
+def is_sentinel_body(value: object) -> bool:
+    """True when a resolved body value is a sentinel rather than a real body."""
+    if value is None:
+        return True
+    return str(value).strip().lower() in SENTINEL_BODY_VALUES
+
+
+def resolve_persistable_body(title: str) -> tuple[str, str] | None:
+    """The ``(slug, body_code)`` worth converting and persisting, else ``None``.
+
+    The single guard both ingestion paths use.  A blank title, a sentinel body or
+    a non-meeting title must never reach ``convert_to_meeting_dict`` or
+    persistence: such a row is unparentable and blocks normalization downstream.
+    Blank titles are rejected *before* the body map can fall through to its
+    default, so an unknown title can never be silently attributed to a real body.
+    """
+    stripped = (title or "").strip()
+    if not stripped:
+        return None
+    if is_non_meeting(stripped):
+        return None
+    slug, code = resolve_body(stripped)
+    if is_sentinel_body(slug) or is_sentinel_body(code):
+        return None
+    return slug, code
+
+
 def resolve_body(title: str) -> tuple[str, str]:
     """Map an AEM result title to a (slug, body_code)."""
     if is_non_meeting(title):
@@ -229,30 +262,37 @@ def resolve_body(title: str) -> tuple[str, str]:
 # main.py will handle inserting them.
 
 NEW_BODY_DEFINITIONS: list[dict] = [
+    # body_code now equals slug.  These previously carried abbreviated codes
+    # (phoenix-hp, phoenix-za, …) while the slug was already the descriptive
+    # form — that mismatch is where the orphaned/duplicate Phoenix bodies came
+    # from.  The 2026-09-18 dev cleanup renamed the codes to match the slugs
+    # (docs/briefs/034-dev-body-cleanup-changes-2026-09-18.md).
     {"name": "Phoenix Historic Preservation Commission", "slug": "phoenix-historic-preservation",
-     "body_code": "phoenix-hp", "body_type": "Commission"},
+     "body_code": "phoenix-historic-preservation", "body_type": "Commission"},
     {"name": "Phoenix Zoning Adjustment", "slug": "phoenix-zoning-adjustment",
-     "body_code": "phoenix-za", "body_type": "Board"},
+     "body_code": "phoenix-zoning-adjustment", "body_type": "Board"},
     {"name": "Phoenix Human Services Commission", "slug": "phoenix-human-services",
-     "body_code": "phoenix-hs", "body_type": "Commission"},
+     "body_code": "phoenix-human-services", "body_type": "Commission"},
     {"name": "Phoenix Human Relations Commission", "slug": "phoenix-human-relations",
-     "body_code": "phoenix-hr", "body_type": "Commission"},
+     "body_code": "phoenix-human-relations", "body_type": "Commission"},
     {"name": "Phoenix Environmental Quality & Sustainability Commission",
-     "slug": "phoenix-environmental-quality", "body_code": "phoenix-eq", "body_type": "Commission"},
+     "slug": "phoenix-environmental-quality", "body_code": "phoenix-environmental-quality", "body_type": "Commission"},
     {"name": "Phoenix Mayor's Commission on Disability Issues",
-     "slug": "phoenix-disability-issues", "body_code": "phoenix-di", "body_type": "Commission"},
+     "slug": "phoenix-disability-issues", "body_code": "phoenix-disability-issues", "body_type": "Commission"},
     {"name": "Phoenix Women's Commission", "slug": "phoenix-womens-commission",
-     "body_code": "phoenix-wc", "body_type": "Commission"},
+     "body_code": "phoenix-womens-commission", "body_type": "Commission"},
     {"name": "Phoenix Heritage Commission", "slug": "phoenix-heritage-commission",
-     "body_code": "phoenix-hc", "body_type": "Commission"},
+     "body_code": "phoenix-heritage-commission", "body_type": "Commission"},
     {"name": "Phoenix License Appeal Board", "slug": "phoenix-license-appeal",
-     "body_code": "phoenix-la", "body_type": "Board"},
+     "body_code": "phoenix-license-appeal", "body_type": "Board"},
     {"name": "Phoenix Fire Pension Board", "slug": "phoenix-fire-pension",
-     "body_code": "phoenix-fp", "body_type": "Board"},
+     "body_code": "phoenix-fire-pension", "body_type": "Board"},
     {"name": "Phoenix Police Pension Board", "slug": "phoenix-police-pension",
-     "body_code": "phoenix-pp", "body_type": "Board"},
-    {"name": "Phoenix City of Phoenix Employees' Retirement System Board",
-     "slug": "phoenix-copers-board", "body_code": "phoenix-cb", "body_type": "Board"},
+     "body_code": "phoenix-police-pension", "body_type": "Board"},
+    {"name": "Phoenix COPERS Board",
+     "slug": "phoenix-copers-board", "body_code": "phoenix-copers-board", "body_type": "Board"},
+    # phoenix-as is a genuine abbreviation whose slug differs from its code, so
+    # this one is NOT an identity mapping.
     {"name": "Phoenix AEM Subcommittee", "slug": "phoenix-aem-subcommittee",
      "body_code": "phoenix-as", "body_type": "Subcommittee"},
 ]
@@ -420,10 +460,10 @@ def search_and_convert(
 
     for r in raw_results:
         title = r.get("title", "") or ""
-        slug, code = resolve_body(title)
-
-        if slug == "__skip__":
+        resolved = resolve_persistable_body(title)
+        if resolved is None:
             continue
+        slug, code = resolved
 
         if body_filter and slug not in body_filter:
             continue

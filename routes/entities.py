@@ -29,7 +29,7 @@ def entity_search():
         params = {}
         where_clauses = ["e.entity_type NOT IN ('parcel', 'address')"]
         if q:
-            where_clauses.append("e.normalized_name ILIKE :q")
+            where_clauses.append("LOWER(e.normalized_name) LIKE LOWER(:q)")
             params["q"] = f"%{q}%"
         if etype and etype != "all":
             where_clauses.append("e.entity_type = :etype")
@@ -59,14 +59,15 @@ def entity_search():
                     f"j.name AS jurisdiction_name "
                     f"FROM entities e "
                     f"LEFT JOIN jurisdictions j ON j.id = e.jurisdiction_id "
-                    f"LEFT JOIN LATERAL ("
-                    f"  SELECT MIN(m.meeting_date) AS first_meeting, "
+                    f"LEFT JOIN ("
+                    f"  SELECT em.entity_id, "
+                    f"         MIN(m.meeting_date) AS first_meeting, "
                     f"         MAX(m.meeting_date) AS last_meeting "
                     f"  FROM entity_mentions em "
                     f"  JOIN agenda_items ai ON ai.id = em.source_id AND em.source_type = 'agenda_item' "
                     f"  JOIN meetings m ON m.id = ai.meeting_db_id "
-                    f"  WHERE em.entity_id = e.id"
-                    f") mrange ON true "
+                    f"  GROUP BY em.entity_id"
+                    f") mrange ON mrange.entity_id = e.id "
                     f"WHERE {where_sql} "
                     f"ORDER BY {sort_clause} "
                     f"LIMIT :limit OFFSET :offset"
@@ -205,28 +206,38 @@ def entity_detail(entity_id: int):
 
         timeline = c.execute(
             text(f"""
-                SELECT DISTINCT ON (m.id)
-                    m.id AS meeting_db_id,
-                    m.meeting_date,
-                    m.meeting_id,
-                    m.body,
-                    pb.name AS body_name,
-                    j.name AS jurisdiction_name,
-                    ai.agenda_item_title,
-                    ai.agenda_item_number,
-                    em.role_in_context,
-                    em.mention_text,
-                    em.confidence,
-                    em.is_withdrawn,
-                    em.flag_reason,
-                    m.meeting_type
-                FROM entity_mentions em
-                JOIN agenda_items ai ON ai.id = em.source_id AND em.source_type = 'agenda_item'
-                JOIN meetings m ON m.id = ai.meeting_db_id
-                JOIN public_bodies pb ON pb.body_code = m.body
-                JOIN jurisdictions j ON j.id = m.jurisdiction_id
-                WHERE em.entity_id = :eid{jur_filter}
-                ORDER BY m.id, m.meeting_date DESC
+                SELECT meeting_db_id, meeting_date, meeting_id, body,
+                       body_name, jurisdiction_name, agenda_item_title,
+                       agenda_item_number, role_in_context, mention_text,
+                       confidence, is_withdrawn, flag_reason, meeting_type
+                FROM (
+                    SELECT m.id AS meeting_db_id,
+                           m.meeting_date,
+                           m.meeting_id,
+                           m.body,
+                           pb.name AS body_name,
+                           j.name AS jurisdiction_name,
+                           ai.agenda_item_title,
+                           ai.agenda_item_number,
+                           em.role_in_context,
+                           em.mention_text,
+                           em.confidence,
+                           em.is_withdrawn,
+                           em.flag_reason,
+                           m.meeting_type,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY m.id
+                               ORDER BY ai.id, em.id
+                           ) AS row_rank
+                    FROM entity_mentions em
+                    JOIN agenda_items ai ON ai.id = em.source_id AND em.source_type = 'agenda_item'
+                    JOIN meetings m ON m.id = ai.meeting_db_id
+                    JOIN public_bodies pb ON pb.body_code = m.body
+                    JOIN jurisdictions j ON j.id = m.jurisdiction_id
+                    WHERE em.entity_id = :eid{jur_filter}
+                ) ranked
+                WHERE row_rank = 1
+                ORDER BY meeting_date DESC, meeting_db_id DESC
                 LIMIT 100
             """),
             params,

@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Newsletters — Poliscopic{% endblock %}
+{% block meta_description %}<meta name="description" content="Subscribe to free weekly Poliscopic digests covering Maricopa County boards, councils, and commissions.">{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-8">
+        <h1 class="mb-2">Poliscopic Newsletters</h1>
+        <p class="lead">Free weekly digests of the decisions shaping Maricopa County — housing, transportation, water, public safety, boards &amp; commissions, and a weekend roundup of everything.</p>
+        <p class="text-muted">No ads, no paywall. Subscribe to any combination; unsubscribe or change topics anytime with the link in every email.</p>
+
+        {% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
+
+        <div class="card mt-4">
+            <div class="card-body">
+                <h2 class="h5 mb-3">Subscribe</h2>
+                <form method="POST" action="/newsletter/subscribe" autocomplete="on">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <!-- Honeypot: hidden from humans, tempting to bots. Leave empty. -->
+                    <div style="position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden;" aria-hidden="true">
+                        <label for="{{ honeypot }}">Company website</label>
+                        <input type="text" id="{{ honeypot }}" name="{{ honeypot }}" tabindex="-1" autocomplete="off">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label" for="sub-email">Email address</label>
+                        <input type="email" class="form-control" id="sub-email" name="email"
+                               maxlength="320" required autocomplete="email"
+                               value="{{ prev_email or '' }}">
+                    </div>
+                    <fieldset class="mb-3">
+                        <legend class="form-label mb-2">Choose newsletters</legend>
+                        {% for slug, label in topics.items() %}
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" value="{{ slug }}"
+                                   id="topic-{{ slug }}" name="topics">
+                            <label class="form-check-label" for="topic-{{ slug }}">{{ label }}</label>
+                        </div>
+                        {% endfor %}
+                    </fieldset>
+                    <button type="submit" class="btn btn-primary">Subscribe</button>
+                    <p class="small text-muted mt-2 mb-0">
+                        By subscribing, you agree Poliscopic's <a href="/terms">Terms of Use</a> and
+                        acknowledge its <a href="/privacy">Privacy Policy</a>.
+                    </p>
+                </form>
+            </div>
+        </div>
+
+        {% if manage_error %}<div class="alert alert-danger mt-3">{{ manage_error }}</div>{% endif %}
+
+        <div class="card mt-4">
+            <div class="card-body">
+                <h2 class="h5 mb-3">Already subscribed?</h2>
+                <p class="text-muted small mb-3">Lost the manage link from a past email? Enter your address and we'll email you a fresh one — it expires after 1 hour.</p>
+                <form method="POST" action="/newsletter/send-manage-link" class="row g-2">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <div class="col">
+                        <input type="email" class="form-control" name="email" maxlength="320"
+                               required placeholder="you@example.com" autocomplete="email">
+                    </div>
+                    <div class="col-auto">
+                        <button type="submit" class="btn btn-outline-primary">Email me a link</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

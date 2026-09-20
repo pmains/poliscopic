@@ -65,10 +65,12 @@ from docs.doc_constants import (
 from docs.doc_db import (
     fetch_batch,
     fetch_by_ids,
+    fetch_retry_priority,
     print_status,
     write_result,
 )
-from docs.extract import extract_text_safe
+from docs.extract import extract_document_safe
+from docs.layout_extract import write_artifact
 
 # ---------------------------------------------------------------------------
 # OnBase (Tempe) — has its own download / placeholder-detection logic.
@@ -126,6 +128,25 @@ ALLOWED_DOMAINS: set[str] = {
     "granicusideas.com",
     "legistar.com",
     "amazonaws.com",
+    # Exact document CDN hosts discovered via trusted government sources.
+    # Each has a long successful extraction history in supporting_documents
+    # (with_text counts below are DB evidence, 2026-09-04):
+    #   public.destinyhosted.com    23,866  (Chandler/El Mirage/Glendale/etc. docs)
+    #   mccobagenda.databankcloud.com 17,887 (Maricopa County BOS agendas)
+    #   d2kbkoa27fdvtw.cloudfront.net  708  (Buckeye docs)
+    #   civicclerk.blob.core.windows.net 390 (Fountain Hills/Surprise/Tolleson)
+    #   peoriaaz.primegov.com         39  (Peoria)
+    #   vulcan-production.nyc3.cdn.digitaloceanspaces.com 28 (Valley Metro)
+    #   azmag.gov                      1  (MAG)
+    # Exact hosts only — deliberately NOT the parent domains
+    # (destinyhosted.com / databankcloud.com / cloudfront.net / etc.).
+    "public.destinyhosted.com",
+    "mccobagenda.databankcloud.com",
+    "d2kbkoa27fdvtw.cloudfront.net",
+    "civicclerk.blob.core.windows.net",
+    "peoriaaz.primegov.com",
+    "vulcan-production.nyc3.cdn.digitaloceanspaces.com",
+    "azmag.gov",
     # Backup / search
     "archive.org",
     "box.com",
@@ -468,7 +489,7 @@ def process_one(doc: dict, force_extract: bool = False) -> dict:
     quarantined documents you've already inspected).
 
     Returns a dict with keys ``id``, ``text``, ``method``, ``local_path``,
-    ``error``, ``duration_ms``.  The caller is responsible for persisting
+    ``error``, ``duration_ms``, and ``layout_artifact_path``.  The caller is responsible for persisting
     (via ``write_result`` or ``batch_update``).
     """
     doc_id = doc["id"]
@@ -482,6 +503,8 @@ def process_one(doc: dict, force_extract: bool = False) -> dict:
         "local_path": None,
         "error": None,
         "duration_ms": 0,
+        "layout_artifact_path": None,
+        "content_hash": None,
     }
 
     # ── Download ──
@@ -522,15 +545,24 @@ def process_one(doc: dict, force_extract: bool = False) -> dict:
         log.info("  Doc %d: force_extract=True, skipping safety checks", doc_id)
 
     # ── Extract ──
-    text_out, method = extract_text_safe(pdf_path)
+    text_out, method, layout_artifact = extract_document_safe(pdf_path)
     duration_ms = int((time.time() - start) * 1000)
     result["duration_ms"] = duration_ms
 
     if text_out and method:
         # Sanitize text before returning
-        result["text"] = sanitize_text(text_out)
+        clean_text = sanitize_text(text_out)
+        # Sanitisation is part of retained-text identity. Layout extraction
+        # emits no control characters; if that invariant changes, keep search
+        # text but refuse to publish misaligned coordinates.
+        if layout_artifact and clean_text != text_out:
+            layout_artifact = None
+        result["text"] = clean_text
         result["method"] = method
         result["local_path"] = str(pdf_path)
+        if layout_artifact:
+            result["layout_artifact_path"] = str(write_artifact(layout_artifact))
+            result["content_hash"] = layout_artifact["source_pdf_sha256"]
     else:
         result["error"] = (
             method
@@ -730,7 +762,35 @@ def main() -> None:
     )
     parser.add_argument(
         "--retry-failed", action="store_true",
-        help="Retry documents marked as failed",
+        help=(
+            "Retry documents marked as failed (legacy full sweep, random order, "
+            "no attempt cap). Prefer --retry-priority for bounded, prioritized retry."
+        ),
+    )
+    parser.add_argument(
+        "--retry-priority", action="store_true",
+        help=(
+            "Bounded, prioritized retry of transient failures. Order: recent "
+            "download_failed → process_error → older download_failed. "
+            "extraction_failed is excluded unless --include-extraction-failed. "
+            "Skips docs whose extraction_attempts >= --max-attempts or whose last "
+            "attempt is newer than --backoff-hours."
+        ),
+    )
+    parser.add_argument(
+        "--max-attempts", type=int, default=3,
+        help="Retry-priority attempt ceiling per doc (default: 3)",
+    )
+    parser.add_argument(
+        "--backoff-hours", type=int, default=24,
+        help="Skip docs attempted within this many hours (default: 24)",
+    )
+    parser.add_argument(
+        "--include-extraction-failed", action="store_true",
+        help=(
+            "Include extraction_failed docs in --retry-priority. Normally excluded: "
+            "the extraction stack has not changed, so corrupt/scanned PDFs fail again."
+        ),
     )
     parser.add_argument(
         "--list-jurisdictions", action="store_true",
@@ -825,12 +885,21 @@ def main() -> None:
         docs = (
             fetch_by_ids(doc_ids)
             if doc_ids
-            else fetch_batch(
-                args.limit,
-                retry_failed=args.retry_failed,
-                jurisdiction=args.jurisdiction,
-                method_filter=args.method,
-                exclude_method=args.exclude_method,
+            else (
+                fetch_retry_priority(
+                    args.limit,
+                    max_attempts=args.max_attempts,
+                    backoff_hours=args.backoff_hours,
+                    include_extraction_failed=args.include_extraction_failed,
+                )
+                if args.retry_priority
+                else fetch_batch(
+                    args.limit,
+                    retry_failed=args.retry_failed,
+                    jurisdiction=args.jurisdiction,
+                    method_filter=args.method,
+                    exclude_method=args.exclude_method,
+                )
             )
         )
 

@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Unsubscribed — Poliscopic{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-8 text-center py-5">
+        {% if ok %}
+        <h1 class="mb-3">You're unsubscribed</h1>
+        {% if topic %}
+        <p class="lead">We unsubscribed <strong>{{ email }}</strong> from the
+            <strong>{{ topic|replace("-", " ")|title }}</strong> digest.</p>
+        {% else %}
+        <p class="lead">We unsubscribed <strong>{{ email }}</strong> from all Poliscopic newsletters.</p>
+        {% endif %}
+        {% if remaining %}
+        <p class="mt-3">You're still subscribed to:
+            {% for t in remaining %}<span class="badge bg-secondary">{{ t|replace("-", " ")|title }}</span> {% endfor %}
+        </p>
+        {% endif %}
+        <p class="text-muted small mt-4">Changed your mind? <a href="/newsletter">Resubscribe here</a> — you'll only get mail after confirming.</p>
+        {% else %}
+        <h1 class="mb-3">Link invalid</h1>
+        <p class="lead">We couldn't find a subscription for that link.</p>
+        <p><a href="/newsletter">Go to the newsletter page</a></p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

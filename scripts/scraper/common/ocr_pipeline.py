@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
-OCR Pipeline — extract agenda text from image-scanned OnBase meetings.
+Legacy OnBase image OCR compatibility path.
+
+New stored-document extraction must use ``scripts/docs/extract.py`` so retained
+text and the ``document-layout/1.0`` artifact are produced together. This
+script remains for the older OnBase page-image workflow and emits plain text;
+it is not a replacement for the governed PDF extraction cascade.
 
 These are meetings where the agenda is a scanned image embedded in the
 OnBase page (not parseable HTML).  The pipeline:
@@ -13,10 +18,10 @@ OnBase page (not parseable HTML).  The pipeline:
 
 Usage:
     # Show OCR text only
-    python scripts/scraper/ocr_pipeline.py bos 4657 --show
+    python scripts/scraper/common/ocr_pipeline.py bos 4657 --show
 
     # Persist agenda items
-    python scripts/scraper/ocr_pipeline.py bos 4657 --persist
+    python scripts/scraper/common/ocr_pipeline.py bos 4657 --persist
 
     # Via the main scraper
     python scripts/scrape_agendas.py bos --sync --meeting-id=4657 --ocr
@@ -41,9 +46,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("ocr")
 
 # ── Windows SSH / Tesseract config ──────────────────────────────────
-WINDOWS_HOST = "windows-tailscale"
-WINDOWS_TEMP = "C:\\Users\\Peter\\Documents\\ocr_temp"
-TESSERACT_PATH = r'"C:\Program Files\Tesseract-OCR\tesseract.exe"'
+WINDOWS_HOST = os.environ.get("POLISCOPIC_DEV_SSH_HOST", "development-host")
+WINDOWS_TEMP = os.environ.get("POLISCOPIC_OCR_TEMP", r"C:\ocr_temp")
+TESSERACT_PATH = os.environ.get(
+    "POLISCOPIC_TESSERACT_PATH", r'"C:\Program Files\Tesseract-OCR\tesseract.exe"')
 
 # ── OnBase config ───────────────────────────────────────────────────
 ONBASE_HOST = "mccobagenda.databankcloud.com"

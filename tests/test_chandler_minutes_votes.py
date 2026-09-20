@@ -13,7 +13,7 @@ from test_tiers import integration_test
 @integration_test
 def test_parse_minutes_votes_unanimous():
     """Motion carried unanimously (7-0) should produce no supervisor votes."""
-    from scraper.chandler import parse_minutes_votes
+    from scraper.jurisdictions.chandler import parse_minutes_votes
 
     text = """
 The meeting was called to order at 6:00 p.m.
@@ -40,7 +40,7 @@ Motion carried unanimously (7-0).
 @integration_test
 def test_parse_minutes_votes_split():
     """Split vote (4-3) with named dissenters."""
-    from scraper.chandler import parse_minutes_votes
+    from scraper.jurisdictions.chandler import parse_minutes_votes
 
     text = """
 Councilmember Ellis moved to approve the fee schedule.
@@ -62,7 +62,7 @@ Motion carried by majority (4-3; Councilmembers Encinas, Orlando, and Poston dis
 @integration_test
 def test_parse_minutes_votes_split_with_mayor():
     """Split vote including Mayor."""
-    from scraper.chandler import parse_minutes_votes
+    from scraper.jurisdictions.chandler import parse_minutes_votes
 
     text = """
 Motion carried by majority (2-5; Mayor Hartke, Councilmembers Encinas, Ellis, Orlando, and Poston dissenting).
@@ -83,7 +83,7 @@ Motion carried by majority (2-5; Mayor Hartke, Councilmembers Encinas, Ellis, Or
 @integration_test
 def test_parse_minutes_votes_conflict_of_interest():
     """Passed N-0 with a councilmember declaring conflict of interest."""
-    from scraper.chandler import parse_minutes_votes
+    from scraper.jurisdictions.chandler import parse_minutes_votes
 
     text = """
 Motion carried unanimously (7-0), with the exception of Item No. 28 which passed 6-0,
@@ -96,7 +96,7 @@ Councilmember Poston declaring a conflict of interest.
 @integration_test
 def test_parse_minutes_votes_no_dissent():
     """No voting section at all — should return empty."""
-    from scraper.chandler import parse_minutes_votes
+    from scraper.jurisdictions.chandler import parse_minutes_votes
 
     text = """
 The meeting was called to order.
@@ -111,7 +111,7 @@ There being no further business, the meeting adjourned.
 @integration_test
 def test_parse_minutes_votes_realistic():
     """Realistic excerpt from Chandler minutes."""
-    from scraper.chandler import parse_minutes_votes
+    from scraper.jurisdictions.chandler import parse_minutes_votes
 
     text = """
 Meeting Minutes
@@ -159,7 +159,7 @@ Motion carried by majority (4-3; Councilmembers Encinas, Orlando, and Poston dis
 @integration_test
 def test_parse_minutes_votes_majority_inference():
     """Roll call attendance + split vote should infer majority."""
-    from scraper.chandler import parse_minutes_votes
+    from scraper.jurisdictions.chandler import parse_minutes_votes
 
     text = """Meeting Minutes
 City Council Regular Meeting

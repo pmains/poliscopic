@@ -28,9 +28,11 @@ def _resolve_jurisdiction_id(session: Session, body: str) -> Optional[int]:
     """
     from sqlalchemy import func as sa_func
 
+    # Prefer the canonical row when duplicate body_codes exist (data bug
+    # 2026-08-26: tucson/chandler had 2 rows per code; lowest id = canonical).
     pb = session.execute(
-        select(PublicBody).where(PublicBody.body_code == body)
-    ).scalar_one_or_none()
+        select(PublicBody).where(PublicBody.body_code == body).order_by(PublicBody.id)
+    ).scalars().first()
     if pb:
         return pb.jurisdiction_id
 

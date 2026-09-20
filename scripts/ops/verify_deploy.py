@@ -6,7 +6,7 @@ Run on the production server after deploying code (not locally).
 Skips if run locally (detects by hostname).
 
 Usage:
-    ssh root@poliscopic.com "cd /opt/poliscopic && .venv/bin/python scripts/verify_deploy.py"
+    ssh deploy-root@example.invalid "cd /opt/poliscopic && .venv/bin/python scripts/verify_deploy.py"
 """
 
 import logging

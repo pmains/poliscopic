@@ -18,6 +18,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+
+from db.tier import DEVELOPMENT, TierError, require_role_url  # noqa: E402
 
 
 def _load_env():
@@ -65,9 +68,14 @@ def main():
     from sqlalchemy import create_engine, text as sa_text
 
     _load_env()
-    url = os.environ.get("DATABASE_URL") or os.environ.get("DEV_DATABASE_URL")
-    if not url:
+    raw_url = os.environ.get("DATABASE_URL") or os.environ.get("DEV_DATABASE_URL")
+    if not raw_url:
         print("ERROR: DATABASE_URL not set", file=sys.stderr)
+        sys.exit(1)
+    try:
+        url = require_role_url(DEVELOPMENT, raw_url, label="development")
+    except TierError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
 
     engine = create_engine(url)

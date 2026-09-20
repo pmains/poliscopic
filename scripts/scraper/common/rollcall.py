@@ -235,7 +235,7 @@ def _parse_attendance_line(line: str, seen: set[str]) -> dict | None:
 
     # Try "Name, Role" pattern
     m = re.match(
-        r"([A-Za-z]+(?:\s+[A-Za-z']+)*)\s*[,---]+\s*("
+        r"([A-Za-z]+(?:\s+[A-Za-z']+)*)\s*[,\-—]+\s*("
         + "|".join(_ROLE_LABELS)
         + r")",
         line,

@@ -430,7 +430,7 @@ class TestSyncStatus(unittest.TestCase):
         ).scalar_one_or_none()
         self.assertEqual(meeting.sync_status, "failed")
         self.assertEqual(meeting.retry_count, 1)
-        self.assertEqual(meeting.last_error, "Something broke")
+        self.assertEqual(meeting.last_error, "[UNKNOWN] Something broke")
 
 
 @integration_test
@@ -478,7 +478,7 @@ class TestRetryBackoff(unittest.TestCase):
     def test_retry_succeeds_after_transient(self):
         """Retry succeeds on second attempt."""
         import asyncio
-        from agenda_scraper import retry_with_backoff
+        from scraper.common.utils import retry_with_backoff
 
         attempts = []
 
@@ -497,7 +497,7 @@ class TestRetryBackoff(unittest.TestCase):
     def test_retry_exhausts_and_raises(self):
         """Retry exhausts all attempts and raises the last exception."""
         import asyncio
-        from agenda_scraper import retry_with_backoff
+        from scraper.common.utils import retry_with_backoff
 
         attempts = []
 
@@ -514,7 +514,7 @@ class TestRetryBackoff(unittest.TestCase):
     def test_retry_succeeds_first_time(self):
         """No retry needed when first attempt succeeds."""
         import asyncio
-        from agenda_scraper import retry_with_backoff
+        from scraper.common.utils import retry_with_backoff
 
         attempts = []
 
@@ -641,12 +641,9 @@ class TestPersistVotes(unittest.TestCase):
 
     def test_persist_votes_creates_membership_for_new_person(self):
         """Creating a new supervisor via persist_votes also creates a BodyMembership."""
-        from db import MeetingMember
-        from datetime import date
-
         # Need a real meeting in the DB for date resolution
         m = self.s.execute(
-            select(Meeting).where(Meeting.meeting_id == "TEST001")
+            select(Meeting).where(Meeting.meeting_id == "TEST-MEMBERSHIP")
         ).scalar_one_or_none()
         if m is None:
             pb = self.s.execute(
@@ -654,7 +651,7 @@ class TestPersistVotes(unittest.TestCase):
             ).scalar_one_or_none()
             m = Meeting(
                 body="bos",
-                meeting_id="TEST001",
+                meeting_id="TEST-MEMBERSHIP",
                 meeting_date="2026-05-01",
                 meeting_type="Formal",
                 meeting_title="Test Meeting",
@@ -664,18 +661,18 @@ class TestPersistVotes(unittest.TestCase):
             self.s.add(m)
             self.s.commit()
 
-        sups = [{"name": "New Council Member", "normalized_name": "new council member", "district": "3"}]
+        sups = [{"name": "Alex Rivera", "normalized_name": "alex rivera", "district": "3"}]
         v = self._make_vote()
-        v[0]["supervisor_votes"] = [{"name": "New Council Member", "vote": "yes"}]
+        v[0]["supervisor_votes"] = [{"name": "Alex Rivera", "vote": "yes"}]
 
-        self.persist_votes(self.s, "bos", "TEST001", sups, v)
+        self.persist_votes(self.s, "bos", "TEST-MEMBERSHIP", sups, v)
         self.s.commit()
 
         # Check BodyMembership was created
         membership = self.s.execute(
             select(BodyMembership)
             .join(Person, Person.id == BodyMembership.person_id)
-            .where(Person.normalized_name == "new council member")
+            .where(Person.normalized_name == "alex rivera")
         ).scalar_one_or_none()
         self.assertIsNotNone(membership, "BodyMembership should exist for new supervisor")
         self.assertEqual(membership.term_start.isoformat(), "2026-05-01")

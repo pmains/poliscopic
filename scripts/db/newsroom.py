@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import (Column, Integer, String, Text, DateTime, Boolean,
-                        ForeignKey, Table, select, func, or_, and_)
+                        ForeignKey, Table, select, func, or_, and_, UniqueConstraint)
 from sqlalchemy.orm import relationship
 
 from db.core import get_engine, get_session
@@ -208,6 +208,79 @@ class Topic(Base):
 
     def __repr__(self) -> str:
         return f"<Topic {self.slug}>"
+
+
+class NewsletterSubscriber(Base):
+    """A newsletter subscriber (one row per email address).
+
+    status: pending → active → unsubscribed
+    pending rows hold an unconfirmed signup; the confirmation link flips
+    the row to active and activates all pending subscription rows.
+    """
+    __tablename__ = "newsletter_subscribers"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    email = Column(String(320), unique=True, nullable=False, index=True)
+    status = Column(String(16), nullable=False, default="pending", index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False,
+                        default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False,
+                        default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc))
+    confirmed_at = Column(DateTime(timezone=True), nullable=True, default=None)
+    unsubscribed_at = Column(DateTime(timezone=True), nullable=True, default=None)
+
+    subscriptions = relationship("NewsletterSubscription",
+                                 back_populates="subscriber",
+                                 cascade="all, delete-orphan")
+
+    def __repr__(self) -> str:
+        return f"<NewsletterSubscriber {self.email} {self.status}>"
+
+
+class NewsletterSubscription(Base):
+    """A subscriber's membership in one newsletter topic.
+
+    status: pending (awaiting email confirmation) → active → unsubscribed.
+    Uniqueness per (subscriber, topic) so re-subscribing updates in place.
+    """
+    __tablename__ = "newsletter_subscriptions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    subscriber_id = Column(Integer,
+                           ForeignKey("newsletter_subscribers.id", ondelete="CASCADE"),
+                           nullable=False, index=True)
+    topic = Column(String(64), nullable=False, index=True)
+    status = Column(String(16), nullable=False, default="pending", index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False,
+                        default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False,
+                        default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc))
+
+    subscriber = relationship("NewsletterSubscriber", back_populates="subscriptions")
+
+    __table_args__ = (UniqueConstraint("subscriber_id", "topic", name="uq_subscriber_topic"),)
+
+    def __repr__(self) -> str:
+        return f"<NewsletterSubscription {self.topic} {self.status}>"
+
+
+class NewsletterSubmitLog(Base):
+    """Rate-limit / abuse audit log for newsletter form submissions.
+
+    Rows are short-lived (pruned after ~48h). Records email + IP + kind so
+    per-email and per-IP windows can be enforced without blocking real users.
+    """
+    __tablename__ = "newsletter_submit_log"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    email = Column(String(320), nullable=False, index=True)
+    ip = Column(String(64), nullable=True, default=None, index=True)
+    kind = Column(String(24), nullable=False, default="subscribe")
+    note = Column(String(255), nullable=False, default="")
+    created_at = Column(DateTime(timezone=True), nullable=False,
+                        default=lambda: datetime.now(timezone.utc), index=True)
 
 
 class TopicWeeklyReport(Base):
@@ -1026,6 +1099,8 @@ def init_newsroom_db():
         AdminUser.__table__, Tag.__table__, Article.__table__,
         ArticleSource.__table__, article_tags, DismissedSuggestion.__table__,
         Topic.__table__, TopicWeeklyReport.__table__,
+        NewsletterSubscriber.__table__, NewsletterSubscription.__table__,
+        NewsletterSubmitLog.__table__,
     ])
     init_fts()
 

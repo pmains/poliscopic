@@ -73,6 +73,28 @@ def get_session() -> Session:
     return _SessionLocal()
 
 
+# Values that are not body codes and must never become registry rows.  These
+# are scrape-level placeholders; before the 2026-09-18 cleanup one of them
+# ("__skip__") was persisted onto a real meeting.
+_INVALID_BODY_CODES = frozenset({
+    "", "__skip__", "skip", "unknown", "none", "n/a", "na", "null", "-",
+})
+
+# Codes retired by the 2026-09-18 dev body-code cleanup.  Refused here so a
+# scraper that still emits one cannot silently re-create the row and undo the
+# migration (docs/briefs/034-dev-body-cleanup-changes-2026-09-18.md).  This is a
+# safety net, not a substitute for fixing the emitters — a refusal means a
+# scraper is still out of date and should be corrected.
+_RETIRED_BODY_CODES = frozenset({
+    "phoenix-hr", "phoenix-hs", "phoenix-fp", "phoenix-pp", "phoenix-eq",
+    "phoenix-di", "phoenix-hp", "phoenix-hc", "phoenix-la", "phoenix-vpc",
+    "phoenix-wc", "phoenix-za", "phoenix-cb",
+    "mesa-boa", "mesa-cc", "mesa-drb", "mesa-hpb",
+    "chandler-pha-comm", "peoria-pz", "el-mirage-planning-zoning",
+    "tempe-development-review-commission", "__skip__",
+})
+
+
 def ensure_public_body(session: Session, body_code: str, name_hint: str = "",
                        jurisdiction_id: int | None = None) -> int | None:
     """Ensure a PublicBody row exists for the given body_code.
@@ -80,26 +102,47 @@ def ensure_public_body(session: Session, body_code: str, name_hint: str = "",
     Returns the public_body.id, or None if no jurisdiction can be resolved.
     Used by scrapers to auto-register body codes found in meeting data
     that don't yet exist in the public_bodies table.
+
+    Fail-closed: refuses placeholders and truncated fragments, and requires an
+    *exact* jurisdiction slug match.  It previously fell back to
+    ``select(Jurisdiction).first()`` — an arbitrary jurisdiction — which is how
+    bodies ended up attached to the wrong jurisdiction (and how fictional rows
+    accumulated).  A code that cannot be resolved to its own jurisdiction now
+    returns None instead of inventing a row; the caller skips the record.
     """
     from db.models import PublicBody, Jurisdiction
     from sqlalchemy import select
 
+    code = (body_code or "").strip()
+    if not code or code.lower() in _INVALID_BODY_CODES:
+        return None
+    if code in _RETIRED_BODY_CODES:
+        # Refuse rather than re-create a retired row.  Silence here would let a
+        # stale scraper quietly undo the migration.
+        import logging
+        logging.getLogger(__name__).warning(
+            "ensure_public_body: refusing retired body code %r — the caller is "
+            "emitting a code retired 2026-09-18 and needs updating", code)
+        return None
+
     existing = session.execute(
-        select(PublicBody).where(PublicBody.body_code == body_code)
+        select(PublicBody).where(PublicBody.body_code == code)
     ).scalar_one_or_none()
     if existing:
         return existing.id
 
-    # Resolve jurisdiction from jurisdiction_id or slug prefixes
+    # Resolve jurisdiction from jurisdiction_id or an exact slug-prefix match.
     if not jurisdiction_id:
-        # Extract jurisdiction slug from body_code prefix (e.g. "chandler-cc" → "chandler")
-        prefix = body_code.split("-")[0] if "-" in body_code else ""
-        jur = session.execute(
-            select(Jurisdiction).where(Jurisdiction.slug == prefix)
-        ).scalar_one_or_none()
-        if not jur and prefix:
-            # Maybe it's a state-county style (e.g. "az-maricopa")
-            jur = session.execute(select(Jurisdiction)).first()
+        # "chandler-cc" → "chandler"; "apache-junction-cc" → "apache-junction"
+        parts = code.split("-")
+        candidates = ["-".join(parts[:i]) for i in range(len(parts) - 1, 0, -1)]
+        jur = None
+        for candidate in candidates:
+            jur = session.execute(
+                select(Jurisdiction).where(Jurisdiction.slug == candidate)
+            ).scalar_one_or_none()
+            if jur:
+                break
         if jur:
             jurisdiction_id = jur.id
 

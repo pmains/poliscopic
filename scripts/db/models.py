@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 import os
 from sqlalchemy import (
+    ForeignKeyConstraint,
     Boolean,
     Column,
     Date,
@@ -12,12 +13,13 @@ from sqlalchemy import (
     Float,
     Index,
     Integer,
+    JSON,
     String,
     Text,
     TypeDecorator,
     UniqueConstraint,
 )
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import deferred, DeclarativeBase
 
 # tsvector column type — PostgreSQL native, Text fallback for SQLite
 # Managed by database trigger on supporting_documents
@@ -381,7 +383,11 @@ class SupportingDocument(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     body = Column(String(16), nullable=False, default="", index=True)
-    agenda_item_id = Column(Integer, nullable=False, index=True)
+    # Source-system key, not a database identity: writers store strings such
+    # as "0" (no document-level key), "bos-20", or
+    # "result-phoenix-cc-publicmeeting-...".  The column is varchar(256);
+    # declaring Integer here mis-described every value.
+    agenda_item_id = Column(String(256), nullable=False, index=True)
     meeting_id = Column(String(32), nullable=False, index=True)
     meeting_db_id = Column(Integer, nullable=False, default=0, index=True)
     agenda_item_number = Column(String(32), nullable=False, default="", index=True)
@@ -398,7 +404,8 @@ class SupportingDocument(Base):
     scraped_at = Column(DateTime(timezone=True), nullable=True, default=None)
     text_content = Column(Text, nullable=True, default=None)
     text_extracted_at = Column(DateTime(timezone=True), nullable=True, default=None)
-    text_extraction_method = Column(String(32), nullable=True, default=None)
+    text_extraction_method = Column(String(512), nullable=True, default=None)
+    extraction_attempts = Column(Integer, nullable=False, default=0)
     extraction_duration_ms = Column(Integer, nullable=True, default=None)
     search_vector = Column(_TSVector, nullable=True, default=None)  # PG tsvector, SQLite text — auto-populated by trigger
     jurisdiction_id = Column(Integer, nullable=True, default=None, index=True)
@@ -412,8 +419,26 @@ class SupportingDocument(Base):
         onupdate=lambda: datetime.now(timezone.utc),
     )
 
+    # Additive canonical identity: the FK target of agenda_item_id, which stays
+    # a source key.  Nullable by design — only deterministic links are set; the
+    # Stage 3 acquisition gaps and meeting-level documents remain NULL.
+    #
+    # STAGED.  The declarative column exists before the database column does, so
+    # it must not appear in the SELECT list of an ordinary query: ``deferred``
+    # keeps it out of default loads until a caller asks for it explicitly.  The
+    # app, the sync column list (derived from the live catalogue, not the model)
+    # and every existing query therefore behave exactly as before the migration.
+    # Accessing the attribute before the column exists fails loudly rather than
+    # returning a stale value, which is the fail-closed direction.
+    agenda_item_db_id = deferred(Column(Integer, nullable=True, default=None, index=True))
+
     __table_args__ = (
         UniqueConstraint("agenda_item_id", "document_url", name="uq_supporting_doc_item_url"),
+        ForeignKeyConstraint(
+            ["agenda_item_db_id"], ["agenda_items.id"],
+            name="supporting_documents_agenda_item_db_id_fkey",
+            ondelete="SET NULL", onupdate="CASCADE",
+        ),
     )
 
 
@@ -586,7 +611,10 @@ class EntityMention(Base):
     confidence = Column(Integer, nullable=False, default=0)
     extracted_by = Column(String(16), nullable=False, default="regex")
     role_in_context = Column(String(64), nullable=True)
+    is_withdrawn = Column(Boolean, nullable=False, default=False)
+    flag_reason = Column(String(64), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         Index("ix_mentions_entity", "entity_id"),
@@ -603,11 +631,21 @@ class EntityRelationship(Base):
     from_entity_id = Column(Integer, nullable=False)
     to_entity_id = Column(Integer, nullable=False)
     relationship = Column(String(64), nullable=False)
+    observed_at = Column(Date, nullable=True)
+    valid_from = Column(Date, nullable=True)
+    valid_to = Column(Date, nullable=True)
+    first_observed_at = Column(Date, nullable=True)
+    last_observed_at = Column(Date, nullable=True)
+    provenance_type = Column(String(32), nullable=True)
+    provenance_id = Column(Integer, nullable=True)
+    source_label = Column(Text, nullable=True)
+    edge_kind = Column(String(32), nullable=True, default="relational")
     source_type = Column(String(32), nullable=True)
     source_id = Column(Integer, nullable=True)
-    confidence = Column(Integer, nullable=False, default=50)
-    metadata_ = Column("metadata", Text, nullable=True)
+    confidence = Column(Float, nullable=False, default=0.5)
+    metadata_ = Column("metadata", JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         Index("ix_relationships_from", "from_entity_id"),
@@ -628,7 +666,9 @@ class IngestFailure(Base):
     error_category = Column(String(32), nullable=False)  # TRANSIENT, CODE, DATA, UNKNOWN
     source = Column(String(64), nullable=False)  # e.g. "csv-persist", "body-resolution"
     body = Column(String(16), nullable=True)  # The attempted body, if known
-    meeting_id = Column(String(32), nullable=True)  # The meeting_id, if known
+    # External scraper/source ID only; this table can be written before a
+    # meetings row exists and must never be reparented to meetings.id.
+    meeting_id = Column(String(32), nullable=True)
     meeting_date = Column(String(16), nullable=True)  # The meeting date, if known
     error = Column(Text, nullable=False)  # Full error message
     context = Column(Text, nullable=True)  # Additional context

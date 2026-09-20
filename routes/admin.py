@@ -15,6 +15,7 @@ from db.core import get_session
 from db.newsroom import (
     Article, ArticleSource, Tag, article_tags, AdminUser, Notification,
     MediaImage, SkeetDraft, sync_article_fts, search_agenda_items,
+    NewsletterSubscriber, NewsletterSubscription,
 )
 
 
@@ -122,6 +123,50 @@ def drafts_list() -> str:
     return render_template("admin/drafts.html", drafts=drafts, counts=counts)
 
 
+@admin_bp.route("/subscribers")
+@login_required
+def subscribers_list() -> str:
+    """Newsletter subscribers: status counts, per-topic counts, and list."""
+    session = get_session()
+    subs = session.execute(
+        select(NewsletterSubscriber)
+        .options(joinedload(NewsletterSubscriber.subscriptions))
+        .order_by(desc(NewsletterSubscriber.created_at))
+    ).unique().scalars().all()
+
+    rows = []
+    for sub in subs:
+        rows.append({
+            "email": sub.email,
+            "status": sub.status,
+            "created_at": sub.created_at,
+            "confirmed_at": sub.confirmed_at,
+            "topics": sorted(x.topic for x in sub.subscriptions
+                             if x.status == "active"),
+            "pending_topics": sorted(x.topic for x in sub.subscriptions
+                                     if x.status == "pending"),
+        })
+
+    by_status: dict = {}
+    for r in rows:
+        by_status[r["status"]] = by_status.get(r["status"], 0) + 1
+
+    topic_counts: dict = {}
+    for r in rows:
+        if r["status"] != "active":
+            continue
+        for t in r["topics"]:
+            topic_counts[t] = topic_counts.get(t, 0) + 1
+
+    counts = _get_all_counts(session)
+    session.close()
+    from newsletter_svc import NEWSLETTER_TOPICS
+    return render_template("admin/subscribers.html", rows=rows,
+                           by_status=by_status, topic_counts=topic_counts,
+                           topics=NEWSLETTER_TOPICS,
+                           counts=counts)
+
+
 @admin_bp.route("/published")
 @login_required
 def published_list() -> str:
@@ -190,6 +235,8 @@ def _get_all_counts(session: Session) -> dict:
         "archived": session.execute(select(func.count(Article.id)).where(Article.status == "archived")).scalar() or 0,
         "featured": session.execute(select(func.count(Article.id)).where(Article.is_featured == True)).scalar() or 0,
         "bluesky": session.execute(select(func.count(SkeetDraft.id))).scalar() or 0,
+        "subscribers": session.execute(
+            select(func.count(NewsletterSubscriber.id))).scalar() or 0,
     }
 
 
@@ -310,7 +357,7 @@ def _generate_pitch(suggestion: dict) -> dict:
     angle = _ANGLE_TEMPLATES.get(topic, "This agenda item could have significant local impact.")
 
     jurisdiction_map = {"bos": "Maricopa County", "pz": "Maricopa County PZ",
-        "adj": "Maricopa County ADJ", "mesa-cc": "Mesa", "mesa-pz": "Mesa PZ",
+        "adj": "Maricopa County ADJ", "mesa-city-council": "Mesa", "mesa-pz": "Mesa PZ",
         "chandler-cc": "Chandler", "chandler-pz": "Chandler PZ",
         "tempe-cc": "Tempe", "scottsdale-cc": "Scottsdale", "gilbert-tc": "Gilbert",
         "mc-": "Maricopa County"}

@@ -24,7 +24,9 @@ BODY_MAP: dict[str, str] = {
     "regular council meeting": "peoria-cc",
     "boards and commission subcommittee": "peoria-sub",
     "virtual community facility district": "peoria-cfd",
-    "planning and zoning": "peoria-pz",
+    # Canonical code is the descriptive one; "peoria-pz" was retired in the
+    # 2026-09-18 dev body-code cleanup (report docs/briefs/034-dev-body-cleanup-changes-2026-09-18.md).
+    "planning and zoning": "peoria-planning-zoning",
 }
 
 DEFAULT_BODY_SLUGS = ["peoria-cc"]

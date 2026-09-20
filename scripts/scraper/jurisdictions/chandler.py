@@ -6,6 +6,7 @@ Uses ``scraper.destiny_common`` (HTML-parser-based) for all parsing.
 
 from __future__ import annotations
 import logging
+import re
 from typing import Optional
 
 from scraper.platforms.destiny_common import (
@@ -213,12 +214,34 @@ def try_discover_results_pdf(minutes_url: str) -> Optional[bytes]:
 
 def parse_minutes_votes(text: str) -> dict:
     """Parse Chandler voting results from minutes PDF text."""
-    supervisors: list[dict] = []
+    from scraper.common.rollcall import extract_attendance
+
+    attendance_text = re.split(
+        r"(?im)^(?:Consent\s+Agenda|Item\s+\d+)", text, maxsplit=1
+    )[0]
+    supervisors = [
+        member for member in extract_attendance(attendance_text)
+        if (member.get("role") or "").lower()
+        in {"mayor", "vice mayor", "councilmember", "council member"}
+    ]
     votes: list[dict] = []
-    seen_sup: set[str] = set()
     lines = text.split("\n")
     i = 0
     vote_count_re = re.compile(r"(\d+)-(\d+)")
+    current_names = {
+        "hartke": "Kevin Hartke",
+        "harris": "OD Harris",
+        "encinas": "Angel Encinas",
+        "ellis": "Christine Ellis",
+        "stewart": "Mark Stewart",
+        "orlando": "Matt Orlando",
+        "poston": "Jane Poston",
+    }
+    attendance_by_surname = {
+        member["name"].split()[-1].lower(): member["name"]
+        for member in supervisors
+        if member.get("name")
+    }
     while i < len(lines):
         line = lines[i].strip()
         if not line:
@@ -231,11 +254,48 @@ def parse_minutes_votes(text: str) -> dict:
         vc = all_vc[-1]
         ayes_count = int(vc.group(1))
         nays_count = int(vc.group(2))
-        result = "Carried Unanimously" if nays_count == 0 else "Carried"
+        if nays_count == 0:
+            result = "Carried Unanimously"
+        elif ayes_count > nays_count:
+            result = "Carried"
+        else:
+            result = "Failed"
+
+        named_votes: list[dict] = []
+        dissent = re.search(r";\s*(.*?)\s+dissenting", line, re.IGNORECASE)
+        dissenting_names: set[str] = set()
+        if dissent:
+            names_text = re.sub(
+                r"\b(?:Mayor|Vice\s+Mayor|Councilmembers?|Council\s+Members?)\b",
+                "",
+                dissent.group(1),
+                flags=re.IGNORECASE,
+            )
+            for raw_name in re.split(r"\s*,\s*|\s+and\s+", names_text):
+                surname = raw_name.strip().split()[-1].lower() if raw_name.strip() else ""
+                if surname:
+                    dissenting_names.add(surname)
+
+        if dissenting_names:
+            if supervisors:
+                for member in supervisors:
+                    surname = member["name"].split()[-1].lower()
+                    named_votes.append({
+                        "name": member["name"],
+                        "vote": "no" if surname in dissenting_names else "yes",
+                    })
+            else:
+                for surname in sorted(dissenting_names):
+                    named_votes.append({
+                        "name": attendance_by_surname.get(
+                            surname, current_names.get(surname, surname.title())
+                        ),
+                        "vote": "no",
+                    })
         votes.append({
             "agenda_item_number": "",
             "motion_result": result,
-            "supervisor_votes": [],
+            "supervisor_votes": named_votes,
             "vote_text": line.strip(),
         })
         i += 1

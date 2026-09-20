@@ -286,7 +286,10 @@ def backfill_drc_votes(dry_run: bool = True, limit: int = 0,
         .where(AgendaItemVote.meeting_db_id.isnot(None))
     )
 
-    DRC_BODIES = ("tempe-development-review-commission", "tempe-drc")
+    # "tempe-development-review-commission" was retired in the 2026-09-18 dev
+    # body-code cleanup; all its rows were reparented to tempe-drc
+    # (docs/briefs/034-dev-body-cleanup-changes-2026-09-18.md).
+    DRC_BODIES = ("tempe-drc",)
 
     rows = session.execute(
         select(MeetingModel.id, MeetingModel.meeting_id, MeetingModel.meeting_date,

@@ -2,9 +2,11 @@
 """
 ocr_image_pdfs.py — OCR image-based supporting documents and agenda items.
 
-Finds agenda items and supporting documents where text is empty or very short
-(for bodies known to serve image-based PDFs), downloads the PDF, runs OCR
-via Tesseract (with optional PaddleOCR fallback), and stores the result.
+Finds agenda items where text is empty or very short (for bodies known to serve
+image-based PDFs), downloads the PDF, and runs the governed document cascade.
+Tesseract TSV is the default scanned-page engine so word boxes and confidence
+are retained in an immutable layout artifact. Legacy PaddleOCR remains an
+explicit benchmark/fallback option rather than an automatic production model.
 
 Usage:
     # Dry run: show what would be processed
@@ -18,8 +20,11 @@ Usage:
 """
 
 import sys, os, time, logging, subprocess, tempfile, urllib.request
+from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 from db import get_engine
+from docs.extract import extract_document_safe
+from docs.layout_extract import write_artifact
 from sqlalchemy import text
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -75,34 +80,12 @@ def download_pdf(url: str) -> str | None:
 
 
 def ocr_tesseract(pdf_path: str) -> str | None:
-    """Run Tesseract OCR on a PDF."""
-    try:
-        # Convert PDF to TIFF for Tesseract
-        import fitz  # PyMuPDF
-        doc = fitz.open(pdf_path)
-        text_parts = []
-        for page in doc:
-            pix = page.get_pixmap(dpi=300)
-            img_bytes = pix.tobytes("png")
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as img_tmp:
-                img_tmp.write(img_bytes)
-                img_path = img_tmp.name
-            try:
-                result = subprocess.run(
-                    ["tesseract", img_path, "stdout", "-l", "eng", "--psm", "1"],
-                    capture_output=True, text=True, timeout=120,
-                )
-                if result.returncode == 0:
-                    text_parts.append(result.stdout)
-            finally:
-                try:
-                    os.unlink(img_path)
-                except OSError:
-                    pass
-        return "\n".join(text_parts) if text_parts else None
-    except Exception as e:
-        log.warning("OCR failed: %s", e)
-        return None
+    """Run the governed native/TSV cascade and retain its layout artifact."""
+    text_output, method, artifact = extract_document_safe(Path(pdf_path))
+    if text_output and method and artifact:
+        write_artifact(artifact)
+        log.info("    Layout extraction method: %s", method)
+    return text_output
 
 
 def ocr_paddleocr(pdf_path: str) -> str | None:

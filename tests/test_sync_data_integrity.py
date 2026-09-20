@@ -12,6 +12,8 @@ import unittest
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -21,7 +23,52 @@ from db import get_session, text, set_database_url
 from sqlalchemy import select, func
 
 
-_real_db_path = str(Path(__file__).resolve().parent.parent / "data" / "maricopa.sqlite")
+# These tests assert the integrity of the local historical SQLite archive. That
+# archive is deliberately never versioned (`.gitignore` ignores data/), so a clean
+# checkout legitimately does not contain it. Make the dependency explicit and
+# overridable instead of letting the whole module fail with "no such table".
+_ARCHIVE_ENV = "POLISCOPIC_ARCHIVE_DB"
+_real_db_path = os.environ.get(
+    _ARCHIVE_ENV,
+    str(Path(__file__).resolve().parent.parent / "data" / "maricopa.sqlite"),
+)
+if not Path(_real_db_path).is_file():
+    pytest.skip(
+        f"data-integrity archive not present at {_real_db_path}. These tests "
+        f"assert the integrity of the local historical SQLite archive, which is "
+        f"never versioned; set {_ARCHIVE_ENV}=<path> to run them.",
+        allow_module_level=True,
+    )
+
+
+def _archive_has_schema(path: str) -> bool:
+    """True when the archive actually contains the tables these tests assert on.
+
+    Existence is not enough: `data/maricopa.sqlite` in a working checkout is a
+    4 KB stub with zero tables, so every test would fail with "no such table"
+    and drown the suite. The precondition is the schema, not the path.
+    """
+    import sqlite3
+
+    try:
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            names = {r[0] for r in con.execute(
+                "select name from sqlite_master where type='table'")}
+        finally:
+            con.close()
+    except Exception:
+        return False
+    return {"meetings", "agenda_items"} <= names
+
+
+if not _archive_has_schema(_real_db_path):
+    pytest.skip(
+        f"the archive at {_real_db_path} has no schema (empty stub, not a "
+        f"populated historical database). Set {_ARCHIVE_ENV}=<path> to a "
+        "populated archive to run these data-integrity tests.",
+        allow_module_level=True,
+    )
 
 
 

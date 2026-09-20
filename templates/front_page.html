@@ -20,12 +20,9 @@
       {% for article in featured %}
       <div class="col-md-4">
         <div class="card h-100 border-primary">
-          {% if article.featured_image %}
-          <img src="{{ article.featured_image }}" class="card-img-top" alt="" style="height:120px;object-fit:cover">
-          {% elif article.tags %}
-          <div class="card-img-top bg-soft-primary d-flex align-items-center justify-content-center" style="height:120px">
-            <span class="text-primary small">{{ article.tags[0].name }}</span>
-          </div>
+          {% set card_img = card_image(article) %}
+          {% if card_img %}
+          <img src="{{ card_img }}" class="card-img-top" alt="" style="height:120px;object-fit:cover">
           {% endif %}
           <div class="card-body">
             <h5 class="card-title"><a href="/articles/{{ article.slug }}" class="text-decoration-none">{{ article.title }}</a></h5>
@@ -58,10 +55,11 @@
                 <span class="text-muted ms-2">{{ article.published_at|az_date('%b %d, %Y') }}</span>
               </div>
             </div>
-            {% if article.featured_image %}
+            {% set feed_img = card_image(article) %}
+            {% if feed_img %}
             <div class="ms-3 flex-shrink-0">
               <a href="/articles/{{ article.slug }}">
-                <img src="{{ article.featured_image }}" alt="" style="width:80px;height:80px;object-fit:cover;border-radius:6px;">
+                <img src="{{ feed_img }}" alt="" style="width:80px;height:80px;object-fit:cover;border-radius:6px;">
               </a>
             </div>
             {% endif %}
@@ -78,24 +76,14 @@
   </div>
 
   <div class="col-lg-4">
-    <!-- Explore box -->
-    <div class="card mb-3">
+    <!-- Newsletter subscribe card -->
+    <div class="card mb-3 border-primary">
       <div class="card-header">
-        <strong>Explore</strong>
+        <strong>Stay Informed</strong>
       </div>
-      <div class="list-group list-group-flush">
-        <a href="/calendar" class="list-group-item list-group-item-action d-flex align-items-center gap-2">
-          <i class="bi bi-calendar3"></i> Calendar
-        </a>
-        <a href="/meetings" class="list-group-item list-group-item-action d-flex align-items-center gap-2">
-          <i class="bi bi-calendar-event"></i> Public Meetings
-        </a>
-        <a href="/bodies" class="list-group-item list-group-item-action d-flex align-items-center gap-2">
-          <i class="bi bi-people"></i> Boards &amp; Commissions
-        </a>
-        <a href="/search" class="list-group-item list-group-item-action d-flex align-items-center gap-2">
-          <i class="bi bi-search"></i> Search
-        </a>
+      <div class="card-body">
+        {% from "newsletter/_subscribe_widget.html" import subscribe_widget %}
+        {{ subscribe_widget(mode="all") }}
       </div>
     </div>
 

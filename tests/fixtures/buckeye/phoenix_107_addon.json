@@ -1,0 +1,15 @@
+{
+  "_note": "Phoenix meeting 6504 (City Council Formal Meeting 6/3/2026). Document 45499 references item 107 and is an add-on; no canonical item 107 was ever materialized for this meeting, so the reference must be HELD, not inferred.",
+  "meeting_db_id": 6504,
+  "body": "phoenix-cc",
+  "granicus_meeting_id": "City Council Formal Meeting-6/3/2026",
+  "references": [
+    {"document_id": 45499, "meeting_db_id": 6504, "body": "phoenix-cc",
+     "source_key": "phoenix-cc-City Council Formal Meeting-6/3/2026_107",
+     "item_number": "107",
+     "title": "***REQUEST TO ADD-ON (SEE ATTACHED MEMO)*** Abandonment"}
+  ],
+  "canonical_numbers": [],
+  "expected_class": "gap_missing_target",
+  "expected_held": 1
+}

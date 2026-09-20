@@ -9,9 +9,24 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
+# The module this suite exercises was removed without a successor: no module in
+# this tree provides parse_pz_agenda_pdf (scripts/scrape_agendas.py was checked).
+# Skip with an exact reason instead of failing at collection, so the rest of the
+# operational suite can still run. Re-point this suite at a real module or
+# retire it deliberately — do not re-enable it blindly.
+_SCRAPER_PATH = Path(__file__).resolve().parents[1] / "scripts" / "agenda_scraper.py"
+
 
 def _load_scraper():
-    scraper_path = Path(__file__).resolve().parents[1] / "scripts" / "agenda_scraper.py"
+    scraper_path = _SCRAPER_PATH
+    if not scraper_path.is_file():
+        pytest.skip(
+            f"{scraper_path} does not exist in this tree: the scraper under "
+            "test was removed and no successor provides parse_pz_agenda_pdf",
+            allow_module_level=True,
+        )
     spec = importlib.util.spec_from_file_location("agenda_scraper", scraper_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load scraper from {scraper_path}")

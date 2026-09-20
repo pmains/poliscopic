@@ -11,6 +11,16 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+# ── Production interlock (FAIL CLOSED) ───────────────────────────────────────
+# Refuses BEFORE .env is sourced and before any SSH, rsync, restart or DB work.
+# There is no --force and no environment escape hatch.
+_pi="${POLISCOPIC_PYTHON:-.venv/bin/python}"
+[ -x "$_pi" ] || _pi=python3
+"$_pi" scripts/ops/production_interlock.py check --operation OP-CODE --entry-point sync.sh >&2 || {
+  echo "REFUSED: production interlock blocked this operation." >&2
+  exit 3
+}
+
 set -a; source .env 2>/dev/null || true; set +a
 
 # rsync wrapper that tolerates exit codes 23 (partial transfer due to
@@ -20,8 +30,8 @@ rsync_safe() {
   rsync "$@" || { rc=$?; [ $rc -le 24 ] && return 0 || exit $rc; }
 }
 
-SSH_TARGET="poliscopic@poliscopic.com"
-SSH_ROOT="root@poliscopic.com"
+SSH_TARGET="${POLISCOPIC_DEPLOY_HOST:?Set POLISCOPIC_DEPLOY_HOST}"
+SSH_ROOT="${POLISCOPIC_DEPLOY_ROOT:?Set POLISCOPIC_DEPLOY_ROOT}"
 APP_DIR="/opt/poliscopic"
 
 # ── 1. Verify production database is reachable ──

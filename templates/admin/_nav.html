@@ -5,6 +5,7 @@
     <li class="nav-item"><a class="nav-link {{ 'active' if request.path == '/admin/archived' }}" href="/admin/archived">Archived ({{ counts.archived }})</a></li>
     <li class="nav-item"><a class="nav-link {{ 'active' if request.path == '/admin/featured' }}" href="/admin/featured">Featured ({{ counts.featured }}/3)</a></li>
     <li class="nav-item"><a class="nav-link {{ 'active' if request.path == '/admin/bluesky' }}" href="/admin/bluesky">Bluesky ({{ counts.bluesky }})</a></li>
+    <li class="nav-item"><a class="nav-link {{ 'active' if request.path == '/admin/subscribers' }}" href="/admin/subscribers">Subscribers ({{ counts.subscribers }})</a></li>
   </ul>
   <div class="flex-shrink-0 ms-2">
     <a href="/admin/suggestions" class="btn btn-outline-primary btn-sm">AI Suggestions</a>

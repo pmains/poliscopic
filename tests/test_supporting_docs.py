@@ -8,11 +8,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_tiers import integration_test
 
-from agenda_scraper import (
-    parse_c_number_parts,
-    _extract_c_number,
-    extract_supporting_documents_from_items,
-)
+from scraper.common.supporting_docs import extract_supporting_documents_from_items
+from scraper.common.utils import _extract_c_number, parse_c_number_parts
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "supporting_docs_item_view.html"
 

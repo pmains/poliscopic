@@ -1,0 +1,53 @@
+{
+  "_note": "Derived from stored agenda_item_text and supporting_documents on poliscopic_dev (2026-09-12). Text only, no PDF required for these cases.",
+  "_provenance": {
+    "423": {"db_meeting_id": 10558, "body": "buckeye-cc", "date": "2025-06-17"},
+    "424": {"db_meeting_id": 10530, "body": "buckeye-cc", "date": "2025-07-01"},
+    "1071": {"db_meeting_id": 10428, "body": "buckeye-cfd", "date": "2026-05-19"},
+    "1046": {"db_meeting_id": 10461, "body": "buckeye-pz", "date": "2026-01-27"},
+    "workshop": {"db_meeting_id": 11181, "body": "buckeye-cc", "type": "Council Workshop"},
+    "non_pz": {"db_meeting_id": 10476, "body": "buckeye-arts-culture"}
+  },
+  "granicus_423_cc": {
+    "body": "buckeye-cc", "granicus_meeting_id": "423",
+    "items": {"4.A": "Council to take action on Resolution No. 27-25 approving Amendment No.",
+              "4.B": "Council to take action on the Memorandum of Understanding (MOU) between",
+              "4.C": "Council to take action to approve and ratify the Lease Agreement in support",
+              "5.A": "Council to take action on Resolution No. 20-25 adopting the Parks and"},
+    "must_not_contain": ["2026"], "held": []
+  },
+  "granicus_424_cc": {
+    "body": "buckeye-cc", "granicus_meeting_id": "424",
+    "items": {"4.A": "Council to take action on Change Order No. 2 to the Construction Contract",
+              "4.B": "Council to take action on Resolution No. 36-25 approving the Public Improve",
+              "4.C": "Council to take on Change Order No. 1 to the On-Call Consulting for Engine"},
+    "must_not_contain": ["2026"], "held": []
+  },
+  "granicus_1071_cfd": {
+    "body": "buckeye-cfd", "granicus_meeting_id": "1071",
+    "known_defect": "the live parse emitted agenda item number '2026' from bond-series prose and titled 4.A '(see details)'",
+    "items": {"2.A": "Board of Directors of the Festival Ranch Community Facilities District",
+              "2.B": "Board of Directors of the Festival Ranch Community Facilities District",
+              "4.A": "Board of Directors to take action on the Festival Ranch Community Facilities District",
+              "4.B": "Board of Directors to take action on the Tartesso West Community Facilities District"},
+    "must_not_contain": ["2026"], "held": [],
+    "resolution_prose": "2026. The Board has caused the Feasibility Report to be prepared, which Feasibility Report is a",
+    "resolution_ref_line": "RES 04-26 Festival Ranch CFD GO Bonds 2026"
+  },
+  "granicus_1046_pz": {
+    "body": "buckeye-pz", "granicus_meeting_id": "1046",
+    "items": {"4.A": "Commission to take action on PLZU-25-0003 AT&T Cell Tower Conditional Use Permit"},
+    "must_not_contain": ["2026"], "held": []
+  },
+  "workshop_cc": {
+    "body": "buckeye-cc", "meeting_type": "Council Workshop",
+    "items": {"2.A": "Presentation and discussion regarding the airport development plans update"},
+    "must_not_contain": ["2026"], "held": []
+  },
+  "non_pz_arts_culture": {
+    "body": "buckeye-arts-culture",
+    "items": {"4.G": "Comments from the public",
+              "4.H": "Subcommittee to take action on the arts and culture work plan"},
+    "must_not_contain": ["2026"], "held": []
+  }
+}

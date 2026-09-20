@@ -474,8 +474,10 @@ def parse_agenda_html(html: str, meeting_id: str,
     all_divs = _find_all(root, "div")
     section_stack: list[str] = []
 
-    # Pattern for numbered items: "1.", "1", "10", "C-06-24-394-X-00"
-    _num_pat = re.compile(r'^(\d+(?:\.\d+)?)\.?\s+(.*)')
+    # Pattern for numbered items: "1.", "10", "4A", "7B1".
+    # Tempe uses an optional alpha subsection followed by an optional numeric
+    # child; treating those as title text silently severed nested item linkage.
+    _num_pat = re.compile(r'^(\d+(?:\.\d+)?[A-Z]?\d*)\.?\s+(.*)')
     _case_pat = re.compile(r'^([A-Z]-\d{2}-\d{2}-\d{3}[\w-]*)\s+(.*)')
 
     def _split_num_title(text: str) -> tuple[str, str]:

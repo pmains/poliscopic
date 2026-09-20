@@ -56,8 +56,9 @@
                 {% for article in featured %}
                 <div class="col-md-4">
                     <div class="card h-100 border-primary">
-                        {% if article.featured_image %}
-                        <img src="{{ article.featured_image }}" class="card-img-top" alt="">
+                        {% set card_img = card_image(article) %}
+                        {% if card_img %}
+                        <img src="{{ card_img }}" class="card-img-top" alt="">
                         {% endif %}
                         <div class="card-body d-flex flex-column">
                             <h5 class="card-title">{{ article.title[:60] }}{% if article.title|length > 60 %}&hellip;{% endif %}</h5>

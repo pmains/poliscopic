@@ -293,8 +293,19 @@ log_info "Writing summary → $SUMMARY_FILE"
 if [ "$COMPLETION_STATUS" != "failed" ]; then
     log_info "Running text extraction for newly scraped documents..."
     EXTRACT_LOG="$LOG_DIR/$DATE_STAMP-extract.log"
+    # Pass 1: untouched docs (never attempted).
     $PYTHON -u "$PROJECT_ROOT/scripts/ingest_docs.py" \
         --workers 5 --limit 500 2>&1 | tee "$EXTRACT_LOG"
+    # Pass 2: bounded auto-retry of high-probability transient failures
+    # (Pete directive 2026-09-04): recent download_failed → process_error →
+    # older download_failed. Attempt-capped (--max-attempts) with a 24h
+    # backoff so no single doc can loop forever. extraction_failed is
+    # excluded (extraction stack unchanged → corrupt/scanned PDFs fail
+    # identically).
+    log_info "Running bounded retry of transient failures..."
+    $PYTHON -u "$PROJECT_ROOT/scripts/ingest_docs.py" \
+        --retry-priority --workers 5 --limit 200 \
+        --max-attempts 3 --backoff-hours 24 2>&1 | tee -a "$EXTRACT_LOG"
     log_info "Text extraction complete. Log → $EXTRACT_LOG"
 fi
 

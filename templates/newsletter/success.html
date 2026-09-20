@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Newsletters — Poliscopic{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-8 text-center py-5">
+        {% if already_active %}
+        <h1 class="mb-3">Subscriptions updated</h1>
+        <p class="lead">That address is already a verified subscriber, so your newsletter choices were updated right away.</p>
+        {% else %}
+        <h1 class="mb-3">Almost done — check your inbox</h1>
+        <p class="lead">We sent a confirmation email{% if email %} to <strong>{{ email }}</strong>{% endif %}.</p>
+        <p>Click the link inside to activate your subscription. If it doesn't arrive within a few minutes, check your spam folder.</p>
+        {% endif %}
+        <p class="text-muted small mt-4">You can unsubscribe or change topics anytime using the link in any Poliscopic newsletter.</p>
+    </div>
+</div>
+{% endblock %}

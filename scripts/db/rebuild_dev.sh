@@ -10,12 +10,13 @@ cd "$PROJECT_ROOT"
 
 DUMP="data/prod-backup-20260721-2354-full.dump"
 PG18_BIN="/opt/homebrew/Cellar/postgresql@18/18.4/bin"
-DEV_HOST="${DEV_HOST:?Set DEV_HOST env var (e.g. 100.91.173.66)}"
+DEV_HOST="${POLISCOPIC_DEV_DB_HOST:?Set POLISCOPIC_DEV_DB_HOST}"
+DEV_SSH_HOST="${POLISCOPIC_DEV_SSH_HOST:?Set POLISCOPIC_DEV_SSH_HOST}"
 DEV_PORT="5432"
 DEV_PASS="${DEV_PASS:?Set DEV_PASS env var}"
 
 echo "═══ Step 1: Create temporary database (via Windows SSH) ═══"
-ssh windows-tailscale "C:\pgsql\pgsql\bin\psql -U postgres -c \"DROP DATABASE IF EXISTS poliscopic_restored;\" -c \"CREATE DATABASE poliscopic_restored;\" -c \"GRANT ALL ON SCHEMA public TO poliscopic;\" -c \"ALTER DATABASE poliscopic_restored OWNER TO poliscopic;\"" 2>&1
+ssh "$DEV_SSH_HOST" "C:\pgsql\pgsql\bin\psql -U postgres -c \"DROP DATABASE IF EXISTS poliscopic_restored;\" -c \"CREATE DATABASE poliscopic_restored;\" -c \"GRANT ALL ON SCHEMA public TO poliscopic;\" -c \"ALTER DATABASE poliscopic_restored OWNER TO poliscopic;\"" 2>&1
 
 echo ""
 echo "═══ Step 2: Restore production dump into poliscopic_restored ═══"
@@ -91,7 +92,7 @@ echo "  READY TO SWAP"
 echo ""
 echo "  If numbers look right, run the swap:"
 echo ""
-echo "    ssh windows-tailscale 'C:\\pgsql\\pgsql\\bin\\psql -U postgres -c \"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '\\''poliscopic_dev'\\'';\" -c \"ALTER DATABASE poliscopic_dev RENAME TO poliscopic_dev_old;\" -c \"ALTER DATABASE poliscopic_restored RENAME TO poliscopic_dev;\" -c \"DROP DATABASE IF EXISTS poliscopic_dev_old;\"'"
+echo "    ssh ${DEV_SSH_HOST} '<run the reviewed database swap command>'"
 echo ""
 echo "  Then restart your Flask app on the Mac."
 echo "═══════════════════════════════════════════════════════════════"

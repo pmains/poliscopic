@@ -1,0 +1,19 @@
+{
+  "kind": "kg-stage3-b2-reachability-probe",
+  "probed_at": "2026-09-14T14:50:00Z",
+  "method": "bounded curl -L --max-time 20, single request per URL, no retries",
+  "user_agent": "poliscopic-recon",
+  "results": [
+    {"url": "https://www.phoenix.gov/content/dam/phoenix/cityclerksite/publicmeetings/results/2023/january/230117012r.pdf",
+     "status": 200, "bytes": 132262, "family": "results", "evidence": "reachable"},
+    {"url": "https://www.phoenix.gov/content/dam/phoenix/cityclerksite/publicmeetings/results/2026/may/260527002R.pdf",
+     "status": 200, "bytes": 139422, "family": "results", "evidence": "reachable"},
+    {"url": "https://www.phoenix.gov/content/dam/phoenix/cityclerksite/publicmeetings/agendas/2023/january/230117012r.pdf",
+     "status": 404, "bytes": 262494, "family": "agenda_substitution", "evidence": "not_published"},
+    {"url": "https://www.phoenix.gov/content/dam/phoenix/cityclerksite/publicmeetings/agenda/2023/january/230117012r.pdf",
+     "status": 404, "bytes": 262494, "family": "agenda_substitution", "evidence": "not_published"},
+    {"url": "https://www.phoenix.gov/content/dam/phoenix/cityclerksite/publicmeetings/2023/january/230117012r.pdf",
+     "status": 404, "bytes": 262484, "family": "agenda_substitution", "evidence": "not_published"}
+  ],
+  "conclusion": "the meeting's results artifact is reachable; no agenda artifact exists under any substitution of the results path family, so a substituted URL is NEVER treated as proof"
+}

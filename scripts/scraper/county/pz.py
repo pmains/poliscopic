@@ -318,8 +318,8 @@ async def extract_pz_agenda_items(page, meeting_url: str) -> list[dict]:
         if it_case and it_case in file_case_to_files:
             for srf in file_case_to_files[it_case]:
                 sd = {
-                    "agenda_item_number": int(it["agenda_item_number"]),
-                    "agenda_item_id": int(it["agenda_item_number"]),
+                    "agenda_item_number": str(it["agenda_item_number"]),
+                    "agenda_item_id": str(it["agenda_item_number"]),
                     "c_number": srf.get("c_number"),
                     "document_title": srf.get("document_title", ""),
                     "document_url": srf.get("document_url", ""),

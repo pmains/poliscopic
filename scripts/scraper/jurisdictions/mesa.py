@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 
 # ── Jurisdiction / body constants ──
 
-PUBLIC_BODY_CODE = "mesa-cc"
+PUBLIC_BODY_CODE = "mesa-city-council"
 SOURCE_SYSTEM = "legistar"
 SOURCE_INSTANCE_URL = "https://mesa.legistar.com"
 
@@ -62,12 +62,18 @@ BODY_SLUG_MAP = {
 }
 
 # Body code → code slug for the ``body`` column on meetings/agenda_items
+#
+# The four abbreviated codes (mesa-cc, mesa-boa, mesa-drb, mesa-hpb) were
+# renamed to their descriptive forms in the 2026-09-18 dev body-code cleanup
+# (docs/briefs/034-dev-body-cleanup-changes-2026-09-18.md), so most entries are
+# now identity.  ``mesa-planning-zoning`` → ``mesa-pz`` is still a real
+# translation: the slug differs from the canonical code.
 BODY_CODE_MAP = {
-    "mesa-city-council": "mesa-cc",
+    "mesa-city-council": "mesa-city-council",
     "mesa-planning-zoning": "mesa-pz",
-    "mesa-design-review-board": "mesa-drb",
-    "mesa-board-of-adjustment": "mesa-boa",
-    "mesa-historic-preservation-board": "mesa-hpb",
+    "mesa-design-review-board": "mesa-design-review-board",
+    "mesa-board-of-adjustment": "mesa-board-of-adjustment",
+    "mesa-historic-preservation-board": "mesa-historic-preservation-board",
     "mesa-cadence-cfd": "mesa-cadence",
     "mesa-eastmark-cfd-1": "mesa-eastmark1",
     "mesa-eastmark-cfd-2": "mesa-eastmark2",
@@ -236,7 +242,7 @@ def parse_meetings_from_html(html: str) -> list[dict]:
                 video_url = urllib.parse.urljoin(BASE_URL, href)
 
         body_slug = _resolve_body_slug(body_name)
-        body_code = BODY_CODE_MAP.get(body_slug, "mesa-cc")
+        body_code = BODY_CODE_MAP.get(body_slug, "mesa-city-council")
 
         m = {
             "body_name": body_name,
@@ -302,7 +308,7 @@ def meetings_for_body(meetings: list[dict], body_slug: str) -> list[dict]:
 # ── Agenda item extraction ──
 
 def parse_agenda_items_from_html(html: str, meeting_id: str,
-                                  body_code: str = "mesa-cc") -> list[dict]:
+                                  body_code: str = "mesa-city-council") -> list[dict]:
     """Parse agenda items from a MeetingDetail.aspx HTML page.
 
     The MeetingDetail page shows items in an HTML table with columns:
@@ -846,7 +852,7 @@ async def search_mesa_meetings_with_playwright(
 
 
 async def fetch_agenda_items_with_playwright(
-    page, meeting_detail_url: str, meeting_id: str, body_code: str = "mesa-cc"
+    page, meeting_detail_url: str, meeting_id: str, body_code: str = "mesa-city-council"
 ) -> list[dict]:
     """Fetch and parse agenda items from a MeetingDetail page via Playwright.
 
@@ -929,7 +935,7 @@ def _enrich_agenda_item_descriptions(
 
 
 async def fetch_agenda_items_async(
-    meeting_detail_url: str, meeting_id: str, body_code: str = "mesa-cc"
+    meeting_detail_url: str, meeting_id: str, body_code: str = "mesa-city-council"
 ) -> list[dict]:
     """Fetch and parse agenda items from a MeetingDetail page via plain HTTP.
 

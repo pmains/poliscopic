@@ -15,6 +15,7 @@ Usage:
 """
 
 import logging
+import json
 import os
 import re
 import sys
@@ -23,13 +24,14 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "scripts"))
 from db import get_engine
+from docs.layout_extract import load_artifact_for_text
 from sqlalchemy import text
 
 log = logging.getLogger("event_extract")
 
 WATERMARK_TABLE = "_event_extract_watermark"
 BATCH_SIZE = 50
-EXTRACTOR_VERSION = "2026-07-27.1"
+EXTRACTOR_VERSION = "2026-09-17.2-semantic-guards"
 
 # ── Action verb patterns ────────────────────────────────────────────────
 # Ordered by specificity (longer patterns first to avoid sub-matches)
@@ -96,7 +98,90 @@ ITEM_NO_RE = re.compile(
 )
 
 
-def extract_events_from_text(doc_id: int, text_content: str) -> list[dict]:
+def _non_result_reason(action: str, row_text: str, start: int, end: int) -> str | None:
+    """Reject only high-confidence lexical uses that are not meeting results."""
+    before = row_text[max(0, start - 45):start].lower()
+    after = row_text[end:min(len(row_text), end + 70)].lower()
+    whole = row_text.lower()
+    normalized = re.sub(r"\s+", " ", action.lower()).strip()
+    if normalized == "continued" and re.search(r"continued\s+page\s+\d", whole):
+        return "pagination"
+    if normalized == "continued" and (
+        re.search(r"continued\s+from\b", whole)
+        or re.search(r"unless\s+continued\b", whole)
+    ):
+        return "historical_or_conditional"
+    if normalized == "deferred" and re.match(
+        r"\s+(?:compensation|retirement\s+option\s+plan)\b", after
+    ):
+        return "noun_phrase"
+    if normalized == "introduced" and re.match(r"\s+in\s+(?:19|20)\d{2}\b", after):
+        return "historical_reference"
+    if normalized in {"discussed", "for discussion"} and re.search(
+        r"\bnot\s+(?:for\s+)?$", before
+    ):
+        return "negated"
+    if normalized == "approved" and (
+        re.search(r"\bany\s+$", before)
+        or re.search(r"\bas\s+$", before)
+    ):
+        return "conditional_or_attributive"
+    if normalized == "approved" and (
+        (before.endswith("(") and re.search(
+            r"\b(?:zoning|district|pcd|pud|rh|r1|r-\d|c-\d)\b", after
+        ))
+        or (
+            re.search(
+                r"\b(?:pcd|pud|zoning|district|residence)\b.{0,70}$", before,
+                re.DOTALL,
+            )
+            and re.match(
+                r"\s*(?:single-family|multi-?family|resort|ranch|residence)", after
+            )
+        )
+    ):
+        return "zoning_descriptor"
+    if normalized in {"received", "received and filed"} and (
+        re.search(r"\b(?:federal\s+)?funding\s+has\s+been\s+$", before)
+        or re.search(
+            r"in\s+accordance\s+with\s+a\s+request.{0,100}received\s+and\s+filed\s+with\s+the\s+city",
+            whole,
+        )
+    ):
+        return "narrative_or_notice"
+    if normalized == "extended" and re.match(
+        r"\s+(?:his|her|their|its)\s+appreciation\b", after
+    ):
+        return "narrative_verb"
+    if normalized == "adopted" and re.search(r"\bthe\s+$", before) and re.match(
+        r"\s+[a-z0-9][^.]{0,80}\b(?:plan|code|policy|ordinance)\b", after
+    ):
+        return "adjectival_reference"
+    if normalized == "preliminary review" and re.match(r"\s+of\b", after):
+        return "agenda_item_title"
+    if normalized == "amended" and re.match(r"\s+meeting\s+minutes\b", after):
+        return "agenda_item_title"
+    return None
+
+
+def _evidence_scopes(text_content: str, artifact: dict | None):
+    """Yield exact row scopes when geometry exists, otherwise whole text."""
+    if artifact:
+        yielded = False
+        for page in artifact.get("pages", []):
+            for row in page.get("rows", []):
+                start, end = row.get("text_start"), row.get("text_end")
+                if isinstance(start, int) and isinstance(end, int) and end > start:
+                    yielded = True
+                    yield text_content[start:end], start, row, page.get("regions", [])
+        if yielded:
+            return
+    yield text_content, 0, None, []
+
+
+def extract_events_from_text(
+    doc_id: int, text_content: str, layout_artifact: dict | None = None
+) -> list[dict]:
     """Extract candidate events from a meeting result document.
 
     Returns list of dicts with keys: raw_text, action_verb, confidence,
@@ -104,55 +189,82 @@ def extract_events_from_text(doc_id: int, text_content: str) -> list[dict]:
     """
     events = []
 
-    for m in ACTION_RE.finditer(text_content):
-        action_verb = m.group(0).strip()
-        action_start = m.start()
-        action_end = m.end()
+    for scoped_text, scope_start, row, regions in _evidence_scopes(
+        text_content, layout_artifact
+    ):
+        for match in ACTION_RE.finditer(scoped_text):
+            action_verb = match.group(0).strip()
+            action_start = scope_start + match.start()
+            action_end = scope_start + match.end()
+            semantic_start = max(0, action_start - 80)
+            semantic_end = min(len(text_content), action_end + 120)
+            semantic_context = text_content[semantic_start:semantic_end]
+            semantic_action_start = action_start - semantic_start
+            semantic_action_end = action_end - semantic_start
+            if _non_result_reason(
+                action_verb, semantic_context,
+                semantic_action_start, semantic_action_end,
+            ):
+                continue
+            region = next((
+                candidate for candidate in regions
+                if any(
+                    isinstance(token.get("text_start"), int)
+                    and token["text_end"] > action_start
+                    and token["text_start"] < action_end
+                    for token in candidate.get("tokens", [])
+                )
+            ), None)
 
-        # Determine outcome from which group matched
-        outcome = None
-        for idx, (pat, out) in enumerate(ACTION_PATTERNS):
-            if m.group(f"a{idx}"):
-                outcome = out
-                break
-        if not outcome:
-            outcome = action_verb.lower().replace(" ", "_")
+            outcome = None
+            for index, (_pattern, candidate_outcome) in enumerate(ACTION_PATTERNS):
+                if match.group(f"a{index}"):
+                    outcome = candidate_outcome
+                    break
+            if not outcome:
+                outcome = action_verb.lower().replace(" ", "_")
 
-        # Grab context: from action verb to next section or ~200 chars
-        context_end = min(action_end + 300, len(text_content))
-        raw_text = text_content[action_start:context_end].strip()
+            if region is not None:
+                raw_text = str(region.get("text", "")).strip()
+            elif row is not None:
+                raw_text = scoped_text.strip()
+            else:
+                context_end = min(action_end + 300, len(text_content))
+                raw_text = text_content[action_start:context_end].strip()
 
-        # Look for case/project number in the surrounding context (200 chars each side)
-        context_window = text_content[
-            max(0, action_start - 100):min(len(text_content), action_end + 200)
-        ]
-        case_match = CASE_RE.search(context_window)
-        case_number = case_match.group(0) if case_match else None
-        # Clean up case number
-        if case_number:
-            case_number = case_number.replace(" ", "").upper()
+            context_window = text_content[
+                max(0, action_start - 100):min(len(text_content), action_end + 200)
+            ]
+            case_match = CASE_RE.search(context_window)
+            case_number = case_match.group(0) if case_match else None
+            if case_number:
+                case_number = case_number.replace(" ", "").upper()
 
-        # Confidence: higher for single-word matches near line start
-        line_start = text_content.rfind("\n", 0, action_start) + 1
-        if line_start == 0:
-            line_start = 0
-        col = action_start - line_start
-        confidence = 0.9 if col < 15 else 0.7  # Near start of line = higher confidence
+            line_start = text_content.rfind("\n", 0, action_start) + 1
+            column = action_start - line_start
+            if row is not None and row.get("bbox") is not None:
+                confidence = 0.95 if match.start() < 25 else 0.8
+            else:
+                confidence = 0.9 if column < 15 else 0.7
 
-        events.append({
-            "raw_text": raw_text[:1000],
-            "action_verb": action_verb,
-            "outcome": outcome,
-            "confidence": confidence,
-            "text_offset_start": action_start,
-            "text_offset_end": action_end,
-            "case_number": case_number,
-        })
+            events.append({
+                "raw_text": raw_text[:1000],
+                "action_verb": action_verb,
+                "outcome": outcome,
+                "confidence": confidence,
+                "text_offset_start": action_start,
+                "text_offset_end": action_end,
+                "case_number": case_number,
+                "layout_region_id": region.get("region_id") if region else None,
+                "layout_role": region.get("role") if region else None,
+                "layout_item_number": region.get("item_number") if region else None,
+            })
 
     return events
 
 
-def process_docs(engine, limit: int = None, dry_run: bool = False) -> dict:
+def process_docs(engine, limit: int = None, dry_run: bool = False,
+                 doc_id: int | None = None) -> dict:
     """Process supporting_documents and write extractions.
 
     Returns stats dict.
@@ -170,23 +282,31 @@ def process_docs(engine, limit: int = None, dry_run: bool = False) -> dict:
                 watermark = 0
     log.info("Watermark last_doc_id=%d (dry_run=%s)", watermark, dry_run)
 
-    grand = {"docs": 0, "events": 0}
+    grand = {"docs": 0, "events_found": 0, "events_inserted": 0,
+             "skipped_existing": 0}
     done = False
 
     while not done:
         with engine.connect() as conn:
-            rows = conn.execute(
-                text("""
-                    SELECT id, text_content, meeting_id, body
+            if doc_id is not None:
+                rows = conn.execute(text("""
+                    SELECT id, text_content, meeting_id, body, content_hash,
+                           text_extraction_method
+                    FROM supporting_documents
+                    WHERE id = :doc_id AND document_type = 'Meeting Result'
+                      AND text_content IS NOT NULL AND text_content != ''
+                """), {"doc_id": doc_id}).fetchall()
+            else:
+                rows = conn.execute(text("""
+                    SELECT id, text_content, meeting_id, body, content_hash,
+                           text_extraction_method
                     FROM supporting_documents
                     WHERE id > :wm
                       AND document_type = 'Meeting Result'
                       AND text_content IS NOT NULL AND text_content != ''
                     ORDER BY id
                     LIMIT :limit
-                """),
-                {"wm": watermark, "limit": BATCH_SIZE},
-            ).fetchall()
+                """), {"wm": watermark, "limit": BATCH_SIZE}).fetchall()
 
         if not rows:
             break
@@ -194,15 +314,26 @@ def process_docs(engine, limit: int = None, dry_run: bool = False) -> dict:
         # Collect all events for this batch
         batch_events = []  # list of (doc_id, events_list)
         for row in rows:
-            doc_id = int(row[0])
+            current_doc_id = int(row[0])
             text_content = str(row[1] or "")
 
-            events = extract_events_from_text(doc_id, text_content)
+            source_hash = str(row[4] or "") or None
+            extraction_method = str(row[5] or "") or None
+            layout_artifact = load_artifact_for_text(
+                text_content, source_hash, method=extraction_method
+            )
+            if layout_artifact is None:
+                # Historical rows may not have a source hash. Unique retained
+                # text remains a safe fallback; ambiguity fails closed.
+                layout_artifact = load_artifact_for_text(text_content)
+            events = extract_events_from_text(
+                current_doc_id, text_content, layout_artifact=layout_artifact
+            )
 
             grand["docs"] += 1
-            grand["events"] += len(events)
-            batch_events.append((doc_id, events))
-            watermark = doc_id
+            grand["events_found"] += len(events)
+            batch_events.append((current_doc_id, events))
+            watermark = current_doc_id
 
             if limit and grand["docs"] >= limit:
                 done = True
@@ -222,14 +353,14 @@ def process_docs(engine, limit: int = None, dry_run: bool = False) -> dict:
                 
                 # Collect all event params
                 event_rows = []
-                for doc_id, events_list in batch_events:
+                for batch_doc_id, events_list in batch_events:
                     for ev in events_list:
                         event_rows.append((
                             EXTRACTOR_VERSION,
                             ev["raw_text"],
                             ev["confidence"],
                             now_ts,
-                            doc_id,
+                            batch_doc_id,
                             ev["action_verb"],
                             ev["text_offset_start"],
                             ev["text_offset_end"],
@@ -239,37 +370,57 @@ def process_docs(engine, limit: int = None, dry_run: bool = False) -> dict:
                 if event_rows:
                     # Use psycopg2.extras.execute_values for safe multi-row INSERT
                     from psycopg2.extras import execute_values
-                    execute_values(
-                        pg_conn.cursor(),
-                        """
+                    # Producer-local replay guard: same pattern extractor/version,
+                    # source document, and exact source span. This does not merge
+                    # similar actions or evidence from independent sources.
+                    existing = set(conn.execute(text("""
+                        SELECT supporting_doc_id, text_offset_start, text_offset_end,
+                               action_verb, extractor_version
+                        FROM meeting_event_extractions
+                        WHERE extractor = 'pattern'
+                          AND supporting_doc_id = ANY(:doc_ids)
+                    """), {"doc_ids": list({r[4] for r in event_rows})}).fetchall())
+                    filtered = [r for r in event_rows
+                                if (r[4], r[6], r[7], r[5], r[0]) not in existing]
+                    grand["skipped_existing"] += len(event_rows) - len(filtered)
+                    if filtered:
+                        execute_values(
+                            pg_conn.cursor(),
+                            """
                             INSERT INTO meeting_event_extractions
                                 (meeting_event_id, extractor, extractor_version,
                                  raw_text, confidence, created_at,
                                  supporting_doc_id, action_verb, text_offset_start,
                                  text_offset_end, case_number)
                             VALUES %s
-                        """,
-                        event_rows,
-                        template="(NULL, 'pattern', %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                    )
+                            """,
+                            filtered,
+                            template="(NULL, 'pattern', %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        )
+                    grand["events_inserted"] += len(filtered)
                 
                 # Single watermark for the batch
-                conn.execute(
-                    text(
-                        f"INSERT INTO {WATERMARK_TABLE} "
-                        f"(last_doc_id, docs_processed, events_found, run_at) "
-                        f"VALUES (:doc_id, :docs, :events, :now)"
-                    ),
-                    {"doc_id": last_doc_id,
-                     "docs": len(batch_events),
-                     "events": total_events,
-                     "now": now_ts},
-                )
+                if doc_id is None:
+                    conn.execute(
+                        text(
+                            f"INSERT INTO {WATERMARK_TABLE} "
+                            f"(last_doc_id, docs_processed, events_found, run_at) "
+                            f"VALUES (:doc_id, :docs, :events, :now)"
+                        ),
+                        {"doc_id": last_doc_id,
+                         "docs": len(batch_events),
+                         "events": total_events,
+                         "now": now_ts},
+                    )
 
         if grand["docs"] % 100 == 0:
-            log.info("  Progress: %d docs, %d events", grand["docs"], grand["events"])
+            log.info("  Progress: %d docs, %d events found, %d inserted, %d existing",
+                     grand["docs"], grand["events_found"],
+                     grand["events_inserted"], grand["skipped_existing"])
 
         if done:
+            break
+        if doc_id is not None:
             break
 
     return grand
@@ -296,6 +447,8 @@ def main():
     parser = argparse.ArgumentParser(description="Phase 5 pattern-based event extraction")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--doc-id", type=int, default=None,
+                        help="Process one document without advancing the watermark")
     args = parser.parse_args()
 
     level = logging.DEBUG if args.dry_run else logging.INFO
@@ -307,14 +460,17 @@ def main():
         ensure_watermark_table(engine)
 
     start = time.time()
-    stats = process_docs(engine, limit=args.limit, dry_run=args.dry_run)
+    stats = process_docs(engine, limit=args.limit, dry_run=args.dry_run,
+                         doc_id=args.doc_id)
     elapsed = time.time() - start
 
     mode = "DRY RUN" if args.dry_run else "DONE"
     log.info(
-        "%s — %d docs, %d events extracted, %.1fs",
-        mode, stats["docs"], stats["events"], elapsed,
+        "%s — %d docs, %d events found, %d inserted, %d existing, %.1fs",
+        mode, stats["docs"], stats["events_found"], stats["events_inserted"],
+        stats["skipped_existing"], elapsed,
     )
+    print(json.dumps({"step": "extract", "success": True, "stats": stats}))
 
 
 if __name__ == "__main__":

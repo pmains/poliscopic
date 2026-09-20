@@ -25,7 +25,7 @@ def main():
 
     ROLES = ["applicant","attorney","staff","owner","presenter","reference","organization","mentioned","iga_counterparty","representative"]
     LM = {n:i for i,n in enumerate(ROLES)}
-    BG = {"phoenix-cc":0,"tempe-cc":0,"chandler-cc":0,"scottsdale-cc":0,"mesa-cc":0,"glendale-cc":0,"goodyear-cc":0,"gilbert-cc":0,"bos":1,"pz":2,"phoenix-pc":2,"phoenix-ti":3,"phoenix-ps":3,"phoenix-ed":3,"phoenix-boa":4,"scottsdale-boa":4}
+    BG = {"phoenix-cc":0,"tempe-cc":0,"chandler-cc":0,"scottsdale-cc":0,"mesa-city-council":0,"glendale-cc":0,"goodyear-cc":0,"gilbert-cc":0,"bos":1,"pz":2,"phoenix-pc":2,"phoenix-ti":3,"phoenix-ps":3,"phoenix-ed":3,"phoenix-boa":4,"scottsdale-boa":4}
 
     log.info("Loading data from DB...")
     engine = get_engine()

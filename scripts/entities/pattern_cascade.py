@@ -34,78 +34,16 @@ from db.core import get_engine
 from entities.entity_utils import clean_normalized_name, normalize_entity_name
 
 log = logging.getLogger("pattern_cascade")
+
+from .pattern_cascade_patterns import (
+    BODY_PATTERNS,
+    EVIDENCE_ONLY_PATTERNS,
+    ROLE_EDGE_MAP,
+)
+
 WATERMARK_TABLE = "_pattern_cascade_watermark"
 MAX_MATCH_LEN = 100
 BATCH_SIZE = 30
-
-ROLE_EDGE_MAP = {"applicant": "HAS_APPLICANT", "attorney": "HAS_ATTORNEY",
-                  "representative": "HAS_ATTORNEY", "owner": "HAS_OWNER",
-                  "staff": "HAS_STAFF", "presenter": "HAS_STAFF"}
-
-# ── Conservative Patterns ──────────────────────────────────────────────
-# Only match labels at line-level with colon separator.
-# Captured value is everything from label to end-of-line or next label.
-
-def _line_field(label):
-    """Label: Value at line-level. Stops at newline or next label."""
-    return re.compile(
-        rf"{label}:\s*(.+?)(?:\n|$)",
-        re.I | re.M,
-    )
-
-BODY_PATTERNS: dict[str, list[tuple[str, str, re.Pattern]]] = {
-    "phoenix-cc": [
-        ("text", "applicant", _line_field("Applicant")),
-        ("text", "representative", _line_field("Representative")),
-        ("text", "staff", _line_field("Staff Contact")),
-    ],
-    # BOS — items use inline format: "Applicant & Owner: Name / Name Request: ..."
-    # All labels on one line, so _line_field would capture past next label.
-    # Instead, capture until the next known label or end of line.
-    "bos": [
-        ("text", "applicant", re.compile(
-            r"Applicant(?:\s*&\s*Owner)?:\s*(.+?)(?=\s+(?:Request|Staff(?:\s+Contact)?|Site Location|Location|Commission Recommendation|Case)\s*:|\n|$)",
-            re.I | re.M,
-        )),
-    ],
-    "phoenix-pc": [
-        ("text", "applicant", _line_field("Applicant")),
-        ("text", "representative", _line_field("Representative")),
-        ("text", "staff", _line_field("Staff Contact")),
-    ],
-    "phoenix-ti": [
-        ("text", "applicant", _line_field("Applicant")),
-        ("text", "representative", _line_field("Representative")),
-        ("text", "staff", _line_field("Staff Contact")),
-    ],
-    "phoenix-ps": [
-        ("text", "applicant", _line_field("Applicant")),
-        ("text", "representative", _line_field("Representative")),
-        ("text", "staff", _line_field("Staff Contact")),
-    ],
-    "phoenix-ed": [
-        ("text", "applicant", _line_field("Applicant")),
-        ("text", "representative", _line_field("Representative")),
-        ("text", "staff", _line_field("Staff Contact")),
-    ],
-    # BOS items don't use Staff Contact: (0 matches), so no staff pattern for BOS.
-
-    # Scottsdale — rich header format with Request:, Presenter(s):, Staff Contact(s):
-    # All Scottsdale bodies share the same format; (s) is optional
-    "scottsdale": [
-        ("text", "applicant", _line_field("Applicant")),
-        ("text", "presenter", _line_field(r"Presenter(?:\(s\))?")),
-        ("text", "staff", _line_field(r"Staff Contact")),
-        ("text", "request", _line_field("Request")),
-        ("text", "location", _line_field("Location")),
-    ],
-    # Maricopa County-wide bodies
-    "pz": [
-        ("text", "applicant", _line_field("Applicant")),
-        ("text", "attorney", _line_field("Attorney")),
-        ("text", "staff", _line_field("Staff Contact")),
-    ],
-}
 
 # ── Body resolution ────────────────────────────────────────────────────
 
@@ -237,6 +175,14 @@ def process_body(conn, body: str, wm: int, entity_cache: dict,
     new_edge_rows: list[dict] = []
     max_id = wm
     total_matches = 0
+    # Exact proposal classification.  Every proposal considered below receives
+    # exactly one classification, identically in dry and live runs.
+    entity_replay = 0
+    mention_replay = 0
+    mention_unresolved = 0
+    edge_replay = 0
+    edge_unresolved = 0
+    emitted_values: list[tuple[str, str]] = []
 
     for r in rows:
         item_id = int(r[0])
@@ -263,15 +209,19 @@ def process_body(conn, body: str, wm: int, entity_cache: dict,
             roles_found.add(role)
             total_matches += 1
 
-            if dry_run:
-                continue
-
+            # Proposals are collected in dry and live runs alike, so dry mode
+            # classifies exactly what live mode would have written.  Nothing is
+            # written until the explicit `not dry_run` guards below.
             etype = classify_entity_type(actor_name)
             norm = normalize_name(actor_name, etype)
             entity_key = (norm, etype)
+            emitted_values.append(("entity_type", etype))
+            emitted_values.append(("role", role))
 
             if entity_key not in entity_cache and entity_key not in new_entities:
                 new_entities[entity_key] = actor_name
+            else:
+                entity_replay += 1
 
             new_mention_rows.append({
                 "entity_id": None,  # resolved after entity creation
@@ -287,6 +237,10 @@ def process_body(conn, body: str, wm: int, entity_cache: dict,
                 case_key = (case_norm, "case")
                 if case_key not in entity_cache and case_key not in new_entities:
                     new_entities[case_key] = identifier
+                else:
+                    entity_replay += 1
+                emitted_values.append(("entity_type", "case"))
+                emitted_values.append(("relationship", edge_type))
                 # Store entity keys (norm + type) for resolution in Phase 4
                 actor_type = classify_entity_type(actor_name)
                 actor_norm = normalize_name(actor_name, actor_type)
@@ -303,139 +257,38 @@ def process_body(conn, body: str, wm: int, entity_cache: dict,
                     "confidence": 0.9,
                 })
 
-    # Phase 2: Entities
-    for (norm, etype), name in new_entities.items():
-        if (norm, etype) in entity_cache:
-            continue
-        sub = conn.execute(
-            text("""
-                INSERT INTO entities
-                    (entity_type, name, normalized_name, is_government,
-                     resolution_status,
-                     first_seen_at, last_seen_at, mention_count,
-                     created_at, updated_at)
-                VALUES (:et, :name, :nn, False,
-                        'unresolved',
-                        now(), now(), 1, now(), now())
-                ON CONFLICT (normalized_name, entity_type) DO UPDATE SET
-                    last_seen_at = now()
-                RETURNING id
-            """),
-            {"et": etype, "name": name, "nn": norm},
-        ).fetchone()
-        if sub:
-            entity_cache[(norm, etype)] = sub[0]
-        else:
-            # Race: entity was inserted between our check and the INSERT.
-            existing = conn.execute(
-                text("SELECT id FROM entities WHERE normalized_name = :nn AND entity_type = :et"),
-                {"nn": norm, "et": etype},
-            ).fetchone()
-            if existing:
-                entity_cache[(norm, etype)] = existing[0]
+    # Phases 2-4: classify every proposal exactly once, then persist only the
+    # proposals classified as inserts.  Classification and persistence live in
+    # pattern_cascade_persistence so this module stays focused on scanning.
+    from scripts.entities.pattern_cascade_persistence import (
+        classify_and_write_edges,
+        classify_and_write_mentions,
+        write_entity_proposals,
+    )
 
-    # Phase 3: Mentions (one at a time to resolve entity_id)
-    for row in new_mention_rows:
-        etype = "person" if is_probable_person(str(row["mention_text"])) else "organization"
-        norm = normalize_name(str(row["mention_text"]), etype)
-        eid = entity_cache.get((norm, etype))
-        if not eid:
-            continue
-        # Check for duplicate
-        dup = conn.execute(
-            text("SELECT 1 FROM entity_mentions WHERE entity_id = :eid "
-                 "AND source_type = :st AND source_id = :sid AND role_in_context = :role"),
-            {"eid": eid, "st": row["source_type"], "sid": row["source_id"],
-             "role": row["role_in_context"]},
-        ).fetchone()
-        if dup:
-            continue
-        conn.execute(
-            text("""
-                INSERT INTO entity_mentions
-                    (entity_id, source_type, source_id, mention_text,
-                     context_snippet, confidence, extracted_by, role_in_context,
-                     created_at)
-                VALUES (:eid, :st, :sid, :mt, :cs, :conf, :eb, :role, now())
-            """),
-            {"eid": eid, "st": row["source_type"], "sid": row["source_id"],
-             "mt": row["mention_text"], "cs": row["context_snippet"],
-             "conf": 90, "eb": "pattern_cascade", "role": row["role_in_context"]},
-        )
-
-    # Phase 4: Edges — resolve entity IDs and bulk insert
-    resolved_edges: list[tuple[int, int, dict]] = []
-    edges_skipped = 0
-    if new_edge_rows and entity_cache:
-        # Pre-load existing edges for this body's agenda items
-        existing_edge_set: set[tuple[int, str, int, str, int]] = set()
-        item_ids = list({r["provenance_id"] for r in new_edge_rows})
-        if item_ids:
-            # Batch in chunks to avoid overly long IN clauses
-            for chunk_start in range(0, len(item_ids), 100):
-                chunk = item_ids[chunk_start:chunk_start + 100]
-                id_list = ", ".join(str(i) for i in chunk)
-                try:
-                    existing_rows = conn.execute(text(f"""
-                        SELECT from_entity_id, relationship, to_entity_id,
-                               provenance_type, provenance_id
-                        FROM entity_relationships
-                        WHERE provenance_type = 'agenda_item'
-                          AND provenance_id IN ({id_list})
-                    """)).fetchall()
-                    for r in existing_rows:
-                        existing_edge_set.add((
-                            int(r[0]), str(r[1]), int(r[2]), str(r[3]), int(r[4])
-                        ))
-                except Exception:
-                    pass  # Table may not exist yet
-
-        for row in new_edge_rows:
-            from_key = (row["from_norm"], row["from_type"])
-            to_key = (row["to_norm"], row["to_type"])
-            from_id = entity_cache.get(from_key)
-            to_id = entity_cache.get(to_key)
-            if not from_id or not to_id:
-                edges_skipped += 1
-                continue
-            key = (from_id, row["relationship"], to_id,
-                   row["provenance_type"], row["provenance_id"])
-            if key in existing_edge_set:
-                edges_skipped += 1
-                continue
-            resolved_edges.append((from_id, to_id, row))
-
-        if resolved_edges:
-            val_parts = []
-            params = {}
-            for i, (from_id, to_id, row) in enumerate(resolved_edges):
-                val_parts.append(
-                    f"(:feid{i}, :teid{i}, :rel{i}, :pt{i}, :pid{i}, :sl{i}, :ek{i})"
-                )
-                params[f"feid{i}"] = from_id
-                params[f"teid{i}"] = to_id
-                params[f"rel{i}"] = row["relationship"]
-                params[f"pt{i}"] = row["provenance_type"]
-                params[f"pid{i}"] = row["provenance_id"]
-                params[f"sl{i}"] = row["source_label"]
-                params[f"ek{i}"] = row["edge_kind"]
-
-            val_clause = ", ".join(val_parts)
-            conn.execute(text(f"""
-                INSERT INTO entity_relationships
-                    (from_entity_id, to_entity_id, relationship,
-                     provenance_type, provenance_id, source_label,
-                     edge_kind, confidence, created_at)
-                SELECT v.feid, v.teid, v.rel, v.pt, v.pid, v.sl,
-                       v.ek, 0.9, now()
-                FROM (VALUES {val_clause})
-                AS v(feid, teid, rel, pt, pid, sl, ek)
-            """), params)
+    planned_keys = set(new_entities)
+    write_entity_proposals(conn, new_entities, entity_cache, dry_run=dry_run)
+    mention_replay, mention_unresolved = classify_and_write_mentions(
+        conn, new_mention_rows, entity_cache, planned_keys, dry_run=dry_run,
+    )
+    edge_inserted, edge_replay, edge_unresolved = classify_and_write_edges(
+        conn, new_edge_rows, entity_cache, planned_keys, dry_run=dry_run,
+    )
 
     return {
         "processed": len(rows), "matches": total_matches,
-        "entities": len(new_entities), "edges": len(resolved_edges),
-        "edges_skipped": edges_skipped, "max_id": max_id,
+        "entities": len(new_entities), "edges": edge_inserted,
+        # ``edges_skipped`` is preserved with its historical meaning (every
+        # skipped edge); the two exact counters below say *why* each was skipped.
+        "edges_skipped": edge_replay + edge_unresolved, "max_id": max_id,
+        "entity_replay_collisions": entity_replay,
+        "mention_replay_collisions": mention_replay,
+        "mentions_unresolved_entity": mention_unresolved,
+        "edge_replay_collisions": edge_replay,
+        "edges_unresolved_endpoint": edge_unresolved,
+        "mentions_planned": len(new_mention_rows),
+        "edges_planned": len(new_edge_rows),
+        "emitted_values": emitted_values,
     }
 
 
@@ -487,7 +340,12 @@ def run_pattern_cascade(
     if not force:
         targeted_bodies = [b for b in targeted_bodies if b not in watermarks]
 
-    total = {"processed": 0, "matches": 0, "entities": 0, "edges": 0}
+    total = {"processed": 0, "matches": 0, "entities": 0, "edges": 0,
+             "entity_replay_collisions": 0, "mention_replay_collisions": 0,
+             "mentions_unresolved_entity": 0, "edge_replay_collisions": 0,
+             "edges_unresolved_endpoint": 0, "mentions_planned": 0,
+             "edges_planned": 0}
+    emitted_values: list[tuple[str, str]] = []
 
     for body in sorted(targeted_bodies):
         wm = watermarks.get(body, 0)
@@ -513,10 +371,16 @@ def run_pattern_cascade(
                     )
             for k in total:
                 total[k] += stats.get(k, 0)
+            emitted_values.extend(stats.get("emitted_values", []))
         except Exception as e:
             log.error("  ✗ %s: %s", body, e, exc_info=verbose)
             if not force:
                 raise
+
+    from scripts.entities.pattern_cascade_persistence import (
+        pattern_cascade_accounting,
+    )
+    from scripts.entities.phase_receipt import build_phase_receipt
 
     return {
         "success": True,
@@ -526,6 +390,14 @@ def run_pattern_cascade(
         "edges_created": total["edges"],
         "bodies_processed": len(targeted_bodies),
         "dry_run": dry_run,
+        **{k: v for k, v in total.items()
+           if k not in ("processed", "matches", "entities", "edges")},
+        "validation_receipt": build_phase_receipt(
+            "pattern_cascade",
+            dry_run=dry_run,
+            values=emitted_values,
+            rows=pattern_cascade_accounting(total, dry_run=dry_run),
+        ),
     }
 
 

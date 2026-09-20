@@ -57,10 +57,23 @@ BODY_SLUG_MAP: dict[str, tuple[str, str]] = {
     "economic development and the arts subcommittee": ("phoenix-economic-dev-sub", "phoenix-ed"),
     "public safety and justice subcommittee": ("phoenix-public-safety-sub", "phoenix-ps"),
     "transportation, infrastructure, and planning subcommittee": ("phoenix-transportation-sub", "phoenix-ti"),
-    "general information packet": ("phoenix-general-packet", "phoenix-gp"),
+    # The "General Information Packet" is a publication, not a meeting of a
+    # governing body — retired 2026-09-18 (docs/briefs/035-dev-cleanup-followups-2026-09-18.md).
+    # The second element is the body code: None means the record is ingested
+    # with no body, which is correct — a document not tied to a body has no body.
+    # "phoenix-gp" survives ONLY as the agenda_item_id prefix (see
+    # _PACKET_ID_PREFIX) so existing item identities stay stable.
+    "general information packet": ("phoenix-general-packet", None),
     "subcommittee general information packet": ("phoenix-sub-packet", "phoenix-sp"),
     "virtual community budget hearing": ("phoenix-budget-hearing", "phoenix-bh"),
 }
+
+
+# Historical agenda_item_id prefix for "General Information Packet" records.
+# Packets are ingested with a NULL body (they are publications, not body
+# meetings), but their item identities already exist using this prefix, so it
+# is retained purely as an id component.
+_PACKET_ID_PREFIX = "phoenix-gp"
 
 
 # ── Helpers ──
@@ -430,7 +443,9 @@ def parse_items_from_rss(rss_xml: str, body_code: str = "phoenix-cc",
 
         sort_order += 1
         an = agenda_number or str(sort_order)
-        aid = f"{body_code}-{meeting_id}_{an}"
+        # Packets are ingested with body_code = None.  Keep the historical
+        # prefix in agenda_item_id so item identities do not change.
+        aid = f"{body_code or _PACKET_ID_PREFIX}-{meeting_id}_{an}"
 
         items.append({
             "meeting_id": meeting_id,

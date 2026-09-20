@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from agenda_scraper import parse_metadata_from_page_data
+from scraper.common.utils import parse_metadata_from_page_data
 
 
 class TestMetadataParsing(unittest.TestCase):

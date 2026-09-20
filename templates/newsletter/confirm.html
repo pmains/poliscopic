@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Newsletter confirmation — Poliscopic{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-8 text-center py-5">
+        {% if ok %}
+        <h1 class="mb-3">You're subscribed ✓</h1>
+        <p class="lead">Your {% if email %}<strong>{{ email }}</strong>{% endif %} address is confirmed for:</p>
+        <ul class="list-inline mt-3">
+            {% for t in topics %}<li class="list-inline-item badge bg-primary">{{ t|replace("-", " ")|title }}</li>{% endfor %}
+        </ul>
+        <p class="mt-4">The next digest will land in your inbox on its regular schedule. Change topics or unsubscribe anytime via the link in any email.</p>
+        {% else %}
+        <h1 class="mb-3">Link invalid or expired</h1>
+        <p class="lead">This confirmation link is no longer valid.</p>
+        <p>Confirmation links expire after 3 days. <a href="/newsletter">Submit your address again</a> to receive a fresh link.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

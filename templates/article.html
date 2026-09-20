@@ -31,6 +31,9 @@
 </script>
 {% endif %}
 <style>
+  .article-body h2 {
+    font-size: 1.15rem;
+  }
   .article-body table {
     width: 100%;
     margin-bottom: 1rem;
@@ -112,13 +115,62 @@
     {% endif %}
   </figure>
   {% endif %}
-  {% if article.summary %}
+  {% set _sec = none %}
+  {% if newsletter_topic %}
+  {% set _sec = article.body|newsletter_sections %}
+  {% endif %}
+  {% set _is_digest = _sec and _sec.count > 0 %}
+  {# Digest articles carry the lede in their own body — rendering the
+     summary here as well repeated the opening text (Pete 2026-09-17). #}
+  {% if article.summary and not _is_digest %}
   <div class="lead mb-4">{{ article.summary }}</div>
   {% endif %}
 
+  {% if _is_digest %}
+  <div class="article-body">
+    <div class="lead mb-4">{{ _sec.lede_html|safe }}</div>
+
+    {# Table of contents (Pete 2026-09-17): jump straight to a
+       jurisdiction/body.  Where a body has BOTH an upcoming and a
+       past-week section, it appears once with both dates listed. #}
+    <nav class="newsletter-toc border rounded bg-light p-3 my-4" aria-label="In this issue">
+      <strong>In this issue</strong>
+      <ul class="mb-0 mt-2">
+        {% for g in _sec.groups %}
+        <li class="mb-1">
+          {% if g.entries|length == 1 %}
+          <a href="#{{ g.entries[0].id }}">{{ g.entries[0].label }}</a>
+          {% else %}
+          <span class="fw-semibold">{{ g.name }}</span>
+          <ul class="mb-0">
+            {% for e in g.entries %}
+            <li><a href="#{{ e.id }}">{{ e.date if e.date else e.label }}</a></li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </nav>
+
+    <div class="d-flex justify-content-center my-4">
+      <div class="card border-primary" style="max-width: 480px;">
+        <div class="card-header">
+          <strong>Stay Informed</strong>
+        </div>
+        <div class="card-body py-3">
+          {% from "newsletter/_subscribe_widget.html" import subscribe_widget %}
+          {{ subscribe_widget(mode="topic", topic_slug=newsletter_topic.slug, topic_label=newsletter_topic.label) }}
+        </div>
+      </div>
+    </div>
+    {{ _sec.body_html|safe }}
+  </div>
+  {% else %}
   <div class="article-body">
     {{ article.body|markdown|safe }}
   </div>
+  {% endif %}
 
   <div style="clear:both;"></div>
 

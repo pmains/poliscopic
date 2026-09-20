@@ -6,6 +6,7 @@ from sqlalchemy.orm import joinedload
 
 from flask import Blueprint, render_template, request, abort
 from db import get_session, Jurisdiction, PublicBody
+from db.names import get_display_name
 from db.newsroom import Article, Tag, search_articles, search_agenda_items, search_supporting_documents, search_entities
 
 articles_bp = Blueprint("articles", __name__)
@@ -104,17 +105,15 @@ def _code_to_name(code: str) -> str:
 def front_page():
     """Main front page — published news feed."""
     session = get_session()
-    featured = session.execute(
-        select(Article).where(Article.status == "published", Article.is_featured == True)
+    # Featured = 3 most recent published articles (Brief 013) — no manual
+    # curation; the feed below is the next 20.
+    recent = session.execute(
+        select(Article).where(Article.status == "published")
         .order_by(desc(Article.published_at))
-        .limit(3)
+        .limit(23)
     ).scalars().all()
-
-    articles = session.execute(
-        select(Article).where(Article.status == "published", Article.is_featured == False)
-        .order_by(desc(Article.published_at))
-        .limit(20)
-    ).scalars().all()
+    featured = recent[:3]
+    articles = recent[3:23]
 
     tags = session.execute(select(Tag).order_by(Tag.name)).scalars().all()
 
@@ -208,7 +207,7 @@ def front_page():
         "tempe-term-limits-subcommittee": "Tempe Term Limits Subcommittee",
         "tempe-advocacy-review-subcommittee": "Tempe Advocacy Review Subcommittee",
         # Mesa
-        "mesa-cc": "Mesa City Council",
+        "mesa-city-council": "Mesa City Council",
         "mesa-pz": "Mesa Planning & Zoning Board",
         "mesa-city-council": "Mesa City Council",
         "mesa-design-review-board": "Mesa Design Review Board",
@@ -253,7 +252,7 @@ def front_page():
         # Gilbert
         "gilbert-tc": "Gilbert Town Council",
         # Peoria
-        "peoria-pz": "Peoria Planning & Zoning Commission",
+        "peoria-planning-zoning": "Peoria Planning & Zoning Commission",
         "peoria-boa": "Peoria Board of Adjustment",
         "peoria-sub": "Peoria Subcommittee",
         # Glendale
@@ -295,7 +294,7 @@ def front_page():
         "avondale-cc": "Avondale City Council",
         "el-mirage-cc": "El Mirage City Council",
         "goodyear-pz": "Goodyear Planning & Zoning",
-        "peoria-pz": "Peoria Planning & Zoning Commission",
+        "peoria-planning-zoning": "Peoria Planning & Zoning Commission",
         "surprise-cc": "Surprise City Council",
         "gilbert-tc": "Gilbert Town Council",
         # MCACC bodies (Maricopa County AgendaCenter)
@@ -329,7 +328,18 @@ def front_page():
         if key in seen_dedup:
             continue
         seen_dedup.add(key)
-        display = _body_names.get(m.body) if _body_names.get(m.body) else _code_to_name(m.body)
+        # Display name comes from the canonical registry (db.names), which is
+        # the single source of truth for body names.  The local _body_names map
+        # that used to live here was a second source of truth that had drifted:
+        # it carried 19 dead entries for codes the data never used, while 1,732
+        # meetings sat on codes it lacked entirely.  It was removed 2026-09-18
+        # (docs/briefs/034-dev-body-cleanup-changes-2026-09-18.md).
+        #
+        # "with-jurisdiction" qualifies county bodies ("Maricopa County Board
+        # of Adjustment") and leaves municipal names unchanged, since those
+        # already carry their city.
+        display = (get_display_name("with-jurisdiction", m.body)
+                   or _code_to_name(m.body))
         upcoming_display.append({
             "body": m.body,
             "display_name": display,
@@ -368,7 +378,17 @@ def article_detail(slug):
         .where(Article.id == article.id)
     ).unique().scalar_one_or_none()
     session.close()
-    return render_template("article.html", article=article)
+    # Newsletter digests get an inline subscribe widget for their topic.
+    newsletter_topic = None
+    try:
+        from newsletter_svc import topic_for_article_slug, NEWSLETTER_TOPICS
+        t = topic_for_article_slug(article.slug)
+        if t:
+            newsletter_topic = {"slug": t, "label": NEWSLETTER_TOPICS.get(t, t)}
+    except Exception:
+        newsletter_topic = None
+    return render_template("article.html", article=article,
+                           newsletter_topic=newsletter_topic)
 
 
 @articles_bp.route("/articles/archive")

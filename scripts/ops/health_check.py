@@ -190,7 +190,7 @@ def main() -> int:
             f"  Response:    {elapsed_ms}ms\n"
             f"  Checked at:  {timestamp}\n"
             f"  Failures:    {failures}\n\n"
-            f"Investigate: ssh root@poliscopic.com 'systemctl status poliscopic'\n"
+            "Investigate the production service using the configured deployment host.\n"
         )
         _send_email(subject, body, ALERT_EMAILS)
 

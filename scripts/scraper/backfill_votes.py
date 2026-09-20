@@ -29,14 +29,13 @@ from argparse import ArgumentParser
 from typing import Optional
 
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from db import get_session, init_db
+from db.meeting_members import AttendanceRecord, reconcile_meeting_members
 from db.models import (
     AgendaItem,
     AgendaItemVote,
     Meeting,
-    MeetingMember,
     Person,
     MemberVote,
 )
@@ -663,12 +662,16 @@ def _persist_minutes_votes(
     session, body: str, meeting_id: str, meeting_db_id: int,
     supervisors: list[dict], votes: list[dict],
 ) -> int:
+    """Replace minutes vote records while reconciling stable attendance rows.
+
+    Vote and member-vote rows are derived from the current minutes parse and
+    are deliberately replaced.  Meeting-member rows can be graph provenance,
+    so their stable IDs must survive a later parse of the same meeting.
+    """
     count = 0
 
-    # Delete existing records for this meeting
-    session.execute(MeetingMember.__table__.delete().where(
-        MeetingMember.body == body, MeetingMember.meeting_id == meeting_id,
-    ))
+    # Vote rows are a replaceable snapshot of this minutes parse.  Attendance
+    # is reconciled below instead of being deleted, preserving provenance IDs.
     subq = select(AgendaItemVote.id).where(
         AgendaItemVote.body == body, AgendaItemVote.meeting_id == meeting_id,
     ).scalar_subquery()
@@ -696,23 +699,26 @@ def _persist_minutes_votes(
             session.flush()
             person_map[norm] = p.id
 
-    # Bulk insert meeting_members (idempotent)
-    mm_values = []
+    # Reconcile attendance by the stable meeting/member key.  The reconciler
+    # retains members omitted by a later parse, because omission is not proof
+    # that historical attendance was false and graph evidence may cite it.
+    attendance: list[AttendanceRecord] = []
     for sup in supervisors:
         norm = sup.get("normalized_name")
         if norm not in person_map:
             continue
-        mm_values.append({
-            "body": body,
-            "meeting_id": meeting_id,
-            "meeting_db_id": meeting_db_id,
-            "member_id": person_map[norm],
-            "role": sup.get("role"),
-            "present": sup.get("present", True),
-        })
-    if mm_values:
-        stmt = pg_insert(MeetingMember).values(mm_values).on_conflict_do_nothing()
-        session.execute(stmt)
+        attendance.append(AttendanceRecord(
+            member_id=person_map[norm],
+            role=sup.get("role"),
+            present=sup.get("present", True),
+        ))
+    reconcile_meeting_members(
+        session,
+        body=body,
+        meeting_id=meeting_id,
+        meeting_db_id=meeting_db_id,
+        attendance=attendance,
+    )
 
     # Insert agenda_item_votes
     seen_nums: set[str] = set()
