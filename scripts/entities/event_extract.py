@@ -71,6 +71,7 @@ ACTION_PATTERNS = [
     (r"NO\s+RESPONSE",                       "no_action"),
     (r"FOR\s+DISCUSSION",                    "discussed"),
     (r"PRELIMINARY\s+REVIEW",                "discussed"),
+    (r"INFO(?:RMATION)?\s+ONLY",             "discussed"),
 ]
 
 # Build combined pattern: groups of (full_pattern, outcome)
@@ -246,6 +247,16 @@ def extract_events_from_text(
                     for token in candidate.get("tokens", [])
                 )
             ), None)
+            if re.fullmatch(r"info(?:rmation)?\s+only", action_verb, re.I) and not (
+                region
+                and region.get("role") == "result"
+                and region.get("basis") in {
+                    "explicit_result_header_same_visual_row_item",
+                    "explicit_results_visual_column_same_row_item",
+                }
+                and region.get("item_number")
+            ):
+                continue
 
             outcome = canonical_outcome_for_predicate(action_verb)
 
@@ -283,6 +294,10 @@ def extract_events_from_text(
                 "layout_region_id": region.get("region_id") if region else None,
                 "layout_role": region.get("role") if region else None,
                 "layout_item_number": region.get("item_number") if region else None,
+                # Preserve the exact predicate span in ``raw_text`` while
+                # exposing its already-bounded visual row for diagnostics
+                # that must distinguish repeated statuses in one document.
+                "layout_context": scoped_text.strip()[:1000] if region else None,
             })
 
         events.extend(attach_compound_result_groups(

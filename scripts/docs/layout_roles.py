@@ -17,7 +17,7 @@ TABLE_ROLE_VERSION = "document-table-roles/1.0"
 RESULT_RE = re.compile(
     r"\b(?:approved|denied|continued|tabled|adopted|received|discussed|"
     r"withdrawn|introduced|amended|sustained|vacated|extended|deferred|"
-    r"heard|no\s+action)\b",
+    r"heard|no\s+action|info(?:rmation)?\s+only)\b",
     re.IGNORECASE,
 )
 
@@ -78,11 +78,17 @@ def infer_table_roles(table: Mapping[str, Any]) -> dict[str, Any]:
                     continue
                 text = _cell_text(row[column_index])
                 if text and RESULT_RE.search(text):
+                    item_number = None
+                    for item_column, item_role in enumerate(roles):
+                        if item_role == "item_number" and item_column < len(row):
+                            item_number = _cell_text(row[item_column]) or None
+                            break
                     result_cells.append({
                         "row": row_index,
                         "column": column_index,
                         "role": "result",
                         "text": text,
+                        "item_number": item_number,
                     })
 
     return {

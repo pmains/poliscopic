@@ -88,6 +88,148 @@ def test_application_anchor_infers_bounded_result_region():
     assert "Quarter" not in regions[0]["text"]
 
 
+def _info_only_page(*, same_row_item=True):
+    tokens = [
+        {"text": "Info", "bbox": [20, 100, 42, 112], "text_start": 0, "text_end": 4},
+        {"text": "Only", "bbox": [45, 100, 68, 112], "text_start": 5, "text_end": 9},
+    ]
+    if same_row_item:
+        tokens += [
+            {"text": "5.", "bbox": [100, 100, 112, 112], "text_start": 10, "text_end": 12},
+            {"text": "Report", "bbox": [120, 100, 160, 112], "text_start": 13, "text_end": 19},
+        ]
+    return {
+        "page": 1, "width": 612,
+        "rows": [{
+            "row_id": "p1-r1", "bbox": [20, 100, 160, 112],
+            "text": "Info Only 5. Report" if same_row_item else "Info Only",
+            "text_start": 0, "text_end": 19 if same_row_item else 9,
+            "tokens": tokens,
+        }],
+    }
+
+
+def _info_only_table(*, result_header="Result", item="5."):
+    return layout.annotate_tables([{
+        "table_id": "p1-t1", "page": 1,
+        "cells": [[result_header, "Item", "Title"], ["Info Only", item, "Report"]],
+    }])
+
+
+def test_info_only_requires_explicit_result_column_and_same_item_row():
+    page = _info_only_page()
+    regions = layout._infer_table_status_regions(page, _info_only_table())
+    assert len(regions) == 1
+    assert regions[0]["role"] == "result"
+    assert regions[0]["item_number"] == "5"
+    artifact = {"pages": [dict(page, regions=regions)]}
+    events = extract_events_from_text(5, page["rows"][0]["text"], artifact)
+    assert [event["outcome"] for event in events] == ["discussed"]
+    assert events[0]["layout_role"] == "result"
+    assert events[0]["layout_item_number"] == "5"
+    assert events[0]["raw_text"] == "Info Only"
+    assert events[0]["layout_context"] == "Info Only 5. Report"
+
+
+@pytest.mark.parametrize(
+    "page,tables",
+    [
+        (_info_only_page(), _info_only_table(result_header="Notes")),
+        (_info_only_page(), _info_only_table(item="")),
+        (_info_only_page(same_row_item=False), _info_only_table()),
+    ],
+)
+def test_info_only_fails_closed_without_role_and_same_item_proof(page, tables):
+    assert layout._infer_table_status_regions(page, tables) == []
+    artifact = {"pages": [dict(page, regions=[])]}
+    assert extract_events_from_text(5, page["rows"][0]["text"], artifact) == []
+
+
+def test_info_only_narrative_never_emits_without_layout_proof():
+    assert extract_events_from_text(5, "This report is info only.") == []
+
+
+def test_info_only_under_explicit_results_visual_column_is_bound_to_item():
+    page = _info_only_page()
+    page["rows"].insert(0, {
+        "row_id": "p1-r0", "bbox": [20, 70, 70, 82], "text": "RESULTS",
+        "text_start": 0, "text_end": 7,
+        "tokens": [{
+            "text": "RESULTS", "bbox": [20, 70, 70, 82],
+            "text_start": 0, "text_end": 7,
+        }],
+    })
+    regions = layout._infer_visual_status_regions(page)
+    assert len(regions) == 1
+    assert regions[0]["basis"] == "explicit_results_visual_column_same_row_item"
+    artifact = {"pages": [dict(page, regions=regions)]}
+    events = extract_events_from_text(5, "Info Only 5. Report", artifact)
+    assert [event["outcome"] for event in events] == ["discussed"]
+    assert events[0]["layout_item_number"] == "5"
+
+
+def test_visual_status_refuses_missing_header_misalignment_and_split_item():
+    no_header = _info_only_page()
+    assert layout._infer_visual_status_regions(no_header) == []
+
+    misaligned = _info_only_page()
+    misaligned["rows"].insert(0, {
+        "row_id": "p1-r0", "text": "RESULTS", "tokens": [{
+            "text": "RESULTS", "bbox": [300, 70, 350, 82],
+        }],
+    })
+    assert layout._infer_visual_status_regions(misaligned) == []
+
+    split_item = _info_only_page(same_row_item=False)
+    split_item["rows"].insert(0, {
+        "row_id": "p1-r0", "text": "RESULTS", "tokens": [{
+            "text": "RESULTS", "bbox": [20, 70, 70, 82],
+        }],
+    })
+    split_item["rows"].append({
+        "row_id": "p1-r2", "text": "5. Report", "tokens": [{
+            "text": "5.", "bbox": [100, 115, 112, 127],
+        }],
+    })
+    assert layout._infer_visual_status_regions(split_item) == []
+
+
+def test_results_column_ignores_titles_and_prose_and_requires_item_title():
+    page = _info_only_page()
+    page["rows"][:0] = [
+        {"row_id": "p1-title", "text": "NOTICE OF RESULTS", "tokens": [{
+            "text": "RESULTS", "bbox": [300, 20, 350, 32],
+        }]},
+        {"row_id": "p1-prose", "text": "The results of the meeting were", "tokens": [{
+            "text": "results", "bbox": [430, 45, 480, 57],
+        }]},
+        {"row_id": "p1-header", "text": "RESULTS", "tokens": [{
+            "text": "RESULTS", "bbox": [20, 70, 70, 82],
+        }]},
+    ]
+    assert len(layout._infer_visual_status_regions(page)) == 1
+
+    page["rows"][-1]["tokens"] = page["rows"][-1]["tokens"][:3]
+    page["rows"][-1]["text"] = "Info Only 5."
+    assert layout._infer_visual_status_regions(page) == []
+
+
+def test_results_visual_column_proof_carries_to_continuation_page():
+    header_page = {
+        "page": 1, "width": 612, "rows": [{
+            "row_id": "p1-r1", "text": "RESULTS", "tokens": [{
+                "text": "RESULTS", "bbox": [20, 70, 70, 82],
+            }],
+        }],
+    }
+    continuation = _info_only_page()
+    continuation["page"] = 2
+    column = layout._explicit_results_column([header_page, continuation])
+    regions = layout._infer_visual_status_regions(continuation, column)
+    assert len(regions) == 1
+    assert regions[0]["item_number"] == "5"
+
+
 def test_identical_text_from_independent_pdfs_does_not_merge(tmp_path, monkeypatch):
     monkeypatch.setattr(layout, "LAYOUT_DIR", tmp_path / "artifacts")
     text = "Approved"

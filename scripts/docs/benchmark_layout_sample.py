@@ -329,7 +329,20 @@ def compare_case(record: dict[str, Any], cache_dir: Path) -> dict[str, Any]:
     events = extract_events_from_text(record["source_id"], new_text, artifact)
     scored = []
     for event in events:
-        score = _context_score(legacy_context, event["raw_text"])
+        info_only = bool(re.fullmatch(
+            r"info(?:rmation)?\s+only", str(event.get("action_verb") or ""), re.I
+        ))
+        reference_context = (
+            str(record.get("evidence", {}).get("snippet") or legacy_context)
+            if info_only else legacy_context
+        )
+        candidate_context = (
+            event.get("layout_context") or event["raw_text"]
+            if info_only else event["raw_text"]
+        )
+        score = _context_score(
+            reference_context, candidate_context
+        )
         scored.append((score, event))
     scored.sort(key=lambda pair: pair[0], reverse=True)
     same_outcome = [pair for pair in scored if pair[1]["outcome"] == expected_outcome]

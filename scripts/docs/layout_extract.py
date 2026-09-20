@@ -30,7 +30,7 @@ from typing import Any, Iterable, Sequence
 from docs.doc_constants import DOWNLOAD_DIR
 from docs.layout_roles import annotate_tables
 
-LAYOUT_ARTIFACT_VERSION = "document-layout/1.1"
+LAYOUT_ARTIFACT_VERSION = "document-layout/1.2"
 LAYOUT_DIR = Path(__file__).resolve().parents[2] / "data" / "document-layout"
 RESULT_WORD_RE = re.compile(
     r"\b(?:approved|denied|continued|tabled|adopted|received|discussed|"
@@ -273,6 +273,162 @@ def _infer_result_regions(page: dict[str, Any]) -> list[dict[str, Any]]:
     return regions
 
 
+def _infer_table_status_regions(
+    page: dict[str, Any], tables: Sequence[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Bind ``Info Only`` to an explicit result column and same visual-row item.
+
+    A flattened phrase is never sufficient.  The table must have an explicit
+    result-bearing header and item-number header, and both the status and item
+    number must resolve to one exact positioned visual row.
+    """
+    regions = []
+    seen: set[tuple[str, str]] = set()
+    for table in tables:
+        if table.get("page") != page.get("page"):
+            continue
+        table_id = str(table.get("table_id") or "")
+        for cell in table.get("semantic_roles", {}).get("result_cells", []):
+            status = re.sub(r"\s+", " ", str(cell.get("text") or "")).strip()
+            if not re.fullmatch(r"info(?:rmation)?\s+only", status, re.I):
+                continue
+            item_number = re.sub(
+                r"\s+", " ", str(cell.get("item_number") or "")
+            ).strip()
+            if not item_number:
+                continue
+            item_pattern = re.compile(
+                rf"(?<!\w){re.escape(item_number.rstrip('.'))}\.?\s*(?!\w)", re.I
+            )
+            for row in page.get("rows", []):
+                row_text = str(row.get("text") or "")
+                if not re.search(r"\binfo(?:rmation)?\s+only\b", row_text, re.I):
+                    continue
+                if not item_pattern.search(row_text):
+                    continue
+                tokens = row.get("tokens", [])
+                status_tokens = []
+                for index, token in enumerate(tokens):
+                    if str(token.get("text") or "").casefold() not in {"info", "information"}:
+                        continue
+                    if index + 1 < len(tokens) and str(
+                        tokens[index + 1].get("text") or ""
+                    ).casefold() == "only":
+                        status_tokens = [token, tokens[index + 1]]
+                        break
+                if len(status_tokens) != 2 or not all(t.get("bbox") for t in status_tokens):
+                    continue
+                key = (str(row.get("row_id")), item_number.casefold())
+                if key in seen:
+                    continue
+                seen.add(key)
+                boxes = [token["bbox"] for token in status_tokens]
+                regions.append({
+                    "region_id": f"{table_id}-result-r{cell['row']}-c{cell['column']}",
+                    "role": "result",
+                    "basis": "explicit_result_header_same_visual_row_item",
+                    "item_number": item_number.rstrip("."),
+                    "bbox": [min(b[0] for b in boxes), min(b[1] for b in boxes),
+                             max(b[2] for b in boxes), max(b[3] for b in boxes)],
+                    "text": status,
+                    "tokens": status_tokens,
+                    "table_id": table_id,
+                })
+    return regions
+
+
+def _explicit_results_column(
+    pages: Sequence[dict[str, Any]],
+) -> tuple[float, float] | None:
+    """Return one document-wide normalized standalone RESULTS header column."""
+    columns = []
+    for page in pages:
+        width = float(page.get("width") or 0)
+        if width <= 0:
+            continue
+        for row in page.get("rows", []):
+            # A document title (``NOTICE OF RESULTS``) or narrative use of
+            # ``results`` is not a column header.  These Phoenix result lists
+            # expose the role as its own visual header row.
+            if re.sub(r"\s+", " ", str(row.get("text") or "")).strip().casefold() != "results":
+                continue
+            for token in row.get("tokens", []):
+                if str(token.get("text") or "").casefold() != "results":
+                    continue
+                bbox = token.get("bbox")
+                if bbox:
+                    columns.append((((float(bbox[0]) + float(bbox[2])) / 2) / width,
+                                    (float(bbox[2]) - float(bbox[0])) / width))
+    if not columns:
+        return None
+    centers = [column[0] for column in columns]
+    if max(centers) - min(centers) > 0.04:
+        return None
+    return sum(centers) / len(centers), max(column[1] for column in columns)
+
+
+def _infer_visual_status_regions(
+    page: dict[str, Any],
+    results_column: tuple[float, float] | None = None,
+) -> list[dict[str, Any]]:
+    """Infer a status only beneath an explicit ``RESULTS`` visual-column header."""
+    if results_column is None:
+        results_column = _explicit_results_column([page])
+    page_width = float(page.get("width") or 0)
+    if results_column is None or page_width <= 0:
+        return []
+    header_center, header_width = results_column
+    regions = []
+    for row in page.get("rows", []):
+        tokens = row.get("tokens", [])
+        for index, token in enumerate(tokens[:-1]):
+            if str(token.get("text") or "").casefold() not in {"info", "information"}:
+                continue
+            if str(tokens[index + 1].get("text") or "").casefold() != "only":
+                continue
+            status_tokens = [token, tokens[index + 1]]
+            if not all(part.get("bbox") for part in status_tokens):
+                continue
+            status_box = [
+                min(part["bbox"][0] for part in status_tokens),
+                min(part["bbox"][1] for part in status_tokens),
+                max(part["bbox"][2] for part in status_tokens),
+                max(part["bbox"][3] for part in status_tokens),
+            ]
+            status_center = (
+                (float(status_box[0]) + float(status_box[2])) / 2
+            ) / page_width
+            if abs(status_center - header_center) > max(0.06, header_width):
+                continue
+            item = next((
+                candidate for candidate in tokens[index + 2:]
+                if candidate.get("bbox")
+                and float(candidate["bbox"][0]) > float(status_box[2]) + 4
+                and re.fullmatch(r"\d+[A-Z]?\.?", str(candidate.get("text") or ""), re.I)
+            ), None)
+            if item is None:
+                continue
+            item_index = tokens.index(item)
+            if not any(
+                candidate.get("bbox")
+                and float(candidate["bbox"][0]) > float(item["bbox"][2])
+                and re.search(r"[A-Za-z]", str(candidate.get("text") or ""))
+                for candidate in tokens[item_index + 1:]
+            ):
+                continue
+            item_number = str(item["text"]).rstrip(".")
+            regions.append({
+                "region_id": f"p{page['page']}-visual-results-{row.get('row_id')}",
+                "role": "result",
+                "basis": "explicit_results_visual_column_same_row_item",
+                "item_number": item_number,
+                "bbox": status_box,
+                "text": " ".join(str(part["text"]) for part in status_tokens),
+                "tokens": status_tokens,
+            })
+    return regions
+
+
 def _table_data(pdf_path: Path) -> tuple[list[dict[str, Any]], str | None]:
     """Return optional deterministic pdfplumber cells for native PDFs."""
     try:
@@ -376,14 +532,19 @@ def extract_native(pdf_path: Path) -> tuple[str, dict[str, Any]] | None:
     text = _serialize_pages(pages)
     if len(text.strip()) <= 50:
         return None
-    for page in pages:
-        page["regions"] = _infer_result_regions(page)
     pdfplumber_version = None
     if not tables:
         tables, pdfplumber_version = _table_data(pdf_path)
         for table in tables:
             table["detector"] = "pdfplumber"
     tables = annotate_tables(tables)
+    results_column = _explicit_results_column(pages)
+    for page in pages:
+        page["regions"] = (
+            _infer_result_regions(page)
+            + _infer_table_status_regions(page, tables)
+            + _infer_visual_status_regions(page, results_column)
+        )
     artifact = {
         "kind": "document-layout",
         "version": LAYOUT_ARTIFACT_VERSION,
