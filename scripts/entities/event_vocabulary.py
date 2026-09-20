@@ -35,6 +35,11 @@ VERB_MAP = {
     # Decision — approval
     "approved":                       ("decision.approval",       "approved"),
     "approved_with_conditions":       ("decision.approval",       "approved_with_conditions"),
+    "approved_with_stipulations":     ("decision.approval",       "approved_with_stipulations"),
+    "approved_subject_to":            ("decision.approval",       "approved_subject_to"),
+    "approved_subject_to_conditions": ("decision.approval",       "approved_subject_to"),
+    "approved_subject_to_stipulations": ("decision.approval",     "approved_subject_to"),
+    "approved_as_amended":            ("decision.approval",       "approved_as_amended"),
 
     # Decision — denial
     "denied":                         ("decision.denial",         "denied"),
@@ -70,9 +75,6 @@ VERB_MAP = {
     "no_response":                    ("procedure.discussion",    "no_response"),
     "discussion":                     ("procedure.discussion",    "discussed"),
     "for_discussion":                 ("procedure.discussion",    "discussed"),
-    "approved_with_stipulations":     ("decision.approval",       "approved_with_conditions"),
-    "approved_with_conditions":       ("decision.approval",       "approved_with_conditions"),
-    "approved_subject_to":            ("decision.approval",       "approved_with_conditions"),
 }
 
 # Outcomes that are procedural boilerplate — still written to events but

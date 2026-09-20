@@ -26,24 +26,27 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "scripts"
 from db import get_engine
 from docs.layout_extract import load_artifact_for_text
 from entities.event_compound_results import attach_compound_result_groups
+from entities.event_outcome_contract import extracted_outcome_fields
 from entities.event_result_context import non_current_result_reason
+from kg.registries.events import canonicalize_outcome
 from sqlalchemy import text
 
 log = logging.getLogger("event_extract")
 
 WATERMARK_TABLE = "_event_extract_watermark"
 BATCH_SIZE = 50
-EXTRACTOR_VERSION = "2026-09-20.1-context-classifier"
+EXTRACTOR_VERSION = "2026-09-20.2-qualified-outcomes"
 
 # ── Action verb patterns ────────────────────────────────────────────────
 # Ordered by specificity (longer patterns first to avoid sub-matches)
 
 ACTION_PATTERNS = [
     # Multi-word actions (must come before single-word)
-    (r"APPROVED\s+WITH\s+STIPULATIONS",     "approved_with_conditions"),
+    (r"APPROVED\s+WITH\s+STIPULATIONS",     "approved_with_stipulations"),
     (r"APPROVED\s+WITH\s+CONDITIONS",        "approved_with_conditions"),
     (r"APPROVED\s+SUBJECT\s+TO(?:\s+(?:STIPULATIONS|CONDITIONS))?",
-                                                "approved_with_conditions"),
+                                                "approved_subject_to"),
+    (r"APPROVED\s+AS\s+AMENDED",             "approved_as_amended"),
     (r"DENIED\s+WITHOUT\s+PREJUDICE",        "denied_without_prejudice"),
     (r"DENIED\s+AS\s+FILED",                 "denied"),
     (r"RECEIVED\s+AND\s+FILED",              "received"),
@@ -92,7 +95,7 @@ def canonical_outcome_for_predicate(predicate: str) -> str:
     if match:
         for index, (_pattern, candidate_outcome) in enumerate(ACTION_PATTERNS):
             if match.group(f"a{index}"):
-                return candidate_outcome
+                return canonicalize_outcome(candidate_outcome).base
     return re.sub(r"\s+", "_", str(predicate).strip().casefold())
 
 # ── Case/project number patterns ────────────────────────────────────────
@@ -258,7 +261,16 @@ def extract_events_from_text(
             ):
                 continue
 
-            outcome = canonical_outcome_for_predicate(action_verb)
+            legacy_outcome = None
+            for index, (_pattern, candidate_outcome) in enumerate(ACTION_PATTERNS):
+                if match.group(f"a{index}"):
+                    legacy_outcome = candidate_outcome
+                    break
+            if legacy_outcome is None:
+                legacy_outcome = re.sub(r"\s+", "_", action_verb.casefold())
+            outcome_fields = extracted_outcome_fields(
+                legacy_outcome, action_verb, action_start
+            )
 
             if region is not None:
                 raw_text = str(region.get("text", "")).strip()
@@ -286,7 +298,7 @@ def extract_events_from_text(
             scope_events.append({
                 "raw_text": raw_text[:1000],
                 "action_verb": action_verb,
-                "outcome": outcome,
+                **outcome_fields,
                 "confidence": confidence,
                 "text_offset_start": action_start,
                 "text_offset_end": action_end,

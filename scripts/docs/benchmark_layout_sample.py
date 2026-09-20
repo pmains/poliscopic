@@ -49,31 +49,36 @@ STOPWORDS = {
     "a", "an", "and", "as", "at", "be", "by", "for", "from", "in",
     "is", "it", "of", "on", "or", "the", "this", "to", "was", "with",
 }
-OUTCOME_ORACLE_VERSION = "stage3-benchmark-outcome-oracle/1.0"
+OUTCOME_ORACLE_VERSION = "stage3-benchmark-outcome-oracle/2.0"
 OUTCOME_ORACLE = {
-    "adopted": "adopted",
-    "amended": "amended",
-    "approved": "approved",
-    "approved subject to": "approved_with_conditions",
-    "approved with stipulations": "approved_with_conditions",
-    "called to order": "called_to_order",
-    "continued": "continued",
-    "deferred": "deferred",
-    "denied": "denied",
-    "discussed": "discussed",
-    "discussion only": "discussed",
-    "extended": "extended",
-    "for discussion": "discussed",
-    "introduced": "introduced",
-    "no action": "no_action",
-    "no response": "no_action",
-    "preliminary review": "discussed",
-    "received": "received",
-    "received and filed": "received",
-    "sustained": "sustained",
-    "tabled": "tabled",
-    "vacated": "vacated",
-    "withdrawn": "withdrawn",
+    "adopted": ("adopted", None),
+    "amended": ("amended", None),
+    "approved": ("approved", None),
+    "approved as amended": ("approved", "as_amended"),
+    "approved subject to": ("approved", "subject_to"),
+    "approved subject to conditions": ("approved", "subject_to"),
+    "approved subject to stipulations": ("approved", "subject_to"),
+    "approved with conditions": ("approved", "with_conditions"),
+    "approved with stipulations": ("approved", "with_stipulations"),
+    "called to order": ("called_to_order", None),
+    "continued": ("continued", None),
+    "deferred": ("deferred", None),
+    "denied": ("denied", None),
+    "denied without prejudice": ("denied", "without_prejudice"),
+    "discussed": ("discussed", None),
+    "discussion only": ("discussed", None),
+    "extended": ("extended", None),
+    "for discussion": ("discussed", None),
+    "introduced": ("introduced", None),
+    "no action": ("no_action", None),
+    "no response": ("no_action", None),
+    "preliminary review": ("discussed", None),
+    "received": ("received", None),
+    "received and filed": ("received", None),
+    "sustained": ("sustained", None),
+    "tabled": ("tabled", None),
+    "vacated": ("vacated", None),
+    "withdrawn": ("withdrawn", None),
 }
 
 
@@ -135,7 +140,14 @@ def _local_context(text: str, start: int, end: int) -> str:
 
 def _canonical_outcome(predicate: str) -> str:
     normalized = _normalized_predicate(predicate)
-    return OUTCOME_ORACLE.get(normalized, normalized.replace(" ", "_"))
+    return OUTCOME_ORACLE.get(
+        normalized, (normalized.replace(" ", "_"), None)
+    )[0]
+
+
+def _canonical_outcome_qualifier(predicate: str) -> str | None:
+    normalized = _normalized_predicate(predicate)
+    return OUTCOME_ORACLE.get(normalized, (normalized.replace(" ", "_"), None))[1]
 
 
 def apply_label_corrections(
@@ -326,6 +338,7 @@ def compare_case(record: dict[str, Any], cache_dir: Path) -> dict[str, Any]:
     start, end = int(record["evidence"]["start"]), int(record["evidence"]["end"])
     legacy_context = _local_context(record["legacy_text"], start, end)
     expected_outcome = _canonical_outcome(record["predicate"])
+    expected_qualifier = _canonical_outcome_qualifier(record["predicate"])
     events = extract_events_from_text(record["source_id"], new_text, artifact)
     scored = []
     for event in events:
@@ -345,7 +358,11 @@ def compare_case(record: dict[str, Any], cache_dir: Path) -> dict[str, Any]:
         )
         scored.append((score, event))
     scored.sort(key=lambda pair: pair[0], reverse=True)
-    same_outcome = [pair for pair in scored if pair[1]["outcome"] == expected_outcome]
+    same_outcome = [
+        pair for pair in scored
+        if pair[1]["outcome"] == expected_outcome
+        and pair[1].get("outcome_qualifier") == expected_qualifier
+    ]
     matched_score, matched_event = same_outcome[0] if same_outcome else (0.0, None)
     matched = bool(matched_event and matched_score >= 0.28)
     status, benchmark_correct = _classify_match(
@@ -362,6 +379,7 @@ def compare_case(record: dict[str, Any], cache_dir: Path) -> dict[str, Any]:
         "status": status,
         "benchmark_correct": benchmark_correct,
         "expected_outcome": expected_outcome,
+        "expected_outcome_qualifier": expected_qualifier,
         "legacy_context": legacy_context,
         "new_method": method,
         "elapsed_seconds": seconds,

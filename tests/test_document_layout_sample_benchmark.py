@@ -6,6 +6,7 @@ from pathlib import Path
 
 from scripts.docs.benchmark_layout_sample import (
     _canonical_outcome,
+    _canonical_outcome_qualifier,
     _classify_match,
     _context_score,
     _local_context,
@@ -52,7 +53,11 @@ def test_local_context_is_bounded_to_adjacent_lines():
 
 
 def test_canonical_outcome_uses_frozen_oracle():
-    assert _canonical_outcome("Approved with stipulations") == "approved_with_conditions"
+    assert _canonical_outcome("Approved with stipulations") == "approved"
+    assert _canonical_outcome_qualifier("Approved with stipulations") == "with_stipulations"
+    assert _canonical_outcome_qualifier("Approved with conditions") == "with_conditions"
+    assert _canonical_outcome_qualifier("Approved subject to") == "subject_to"
+    assert _canonical_outcome_qualifier("Approved as amended") == "as_amended"
     assert _canonical_outcome("Preliminary Review") == "discussed"
     assert _canonical_outcome("For discussion") == "discussed"
     assert len(_outcome_oracle_digest()) == 64

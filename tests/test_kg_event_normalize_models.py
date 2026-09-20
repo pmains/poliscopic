@@ -149,6 +149,26 @@ def test_qualified_outcomes_split_into_base_and_qualifier():
     assert denied.outcome.qualifier == "without_prejudice"
 
 
+@pytest.mark.parametrize(
+    "verb,qualifier",
+    [
+        ("Approved with Conditions", "with_conditions"),
+        ("Approved with Stipulations", "with_stipulations"),
+        ("Approved Subject to", "subject_to"),
+        ("Approved Subject to Conditions", "subject_to"),
+        ("Approved Subject to Stipulations", "subject_to"),
+        ("Approved as Amended", "as_amended"),
+    ],
+)
+def test_extractor_qualified_approval_phrases_retain_precise_qualifier(
+    verb, qualifier
+):
+    event_type, outcome = normalize_action_verb(verb)
+    assert event_type == "approval"
+    assert outcome.base == "approved"
+    assert outcome.qualifier == qualifier
+
+
 # -- dotted slug to canonical leaf -------------------------------------------
 
 

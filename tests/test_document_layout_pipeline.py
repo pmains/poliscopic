@@ -406,8 +406,10 @@ def test_compound_result_group_is_stable_and_preserves_member_offsets():
     first = extract_events_from_text(91, text)
     second = extract_events_from_text(91, text)
     assert [event["outcome"] for event in first] == [
-        "denied", "approved_with_conditions",
+        "denied", "approved",
     ]
+    assert first[1]["outcome_qualifier"] == "subject_to"
+    assert first[1]["legacy_outcome"] == "approved_subject_to"
     assert [event["compound_result_group_id"] for event in first] == [
         event["compound_result_group_id"] for event in second
     ]
@@ -415,6 +417,36 @@ def test_compound_result_group_is_stable_and_preserves_member_offsets():
     for event in first:
         start, end = event["text_offset_start"], event["text_offset_end"]
         assert text[start:end] == event["action_verb"]
+
+
+@pytest.mark.parametrize(
+    "text,qualifier,legacy,qualifier_text",
+    [
+        ("Approved with Conditions", "with_conditions", "approved_with_conditions", "with Conditions"),
+        ("Approved with Stipulations", "with_stipulations", "approved_with_stipulations", "with Stipulations"),
+        ("Approved Subject to Conditions", "subject_to", "approved_subject_to", "Subject to Conditions"),
+        ("Approved Subject to Stipulations", "subject_to", "approved_subject_to", "Subject to Stipulations"),
+        ("Approved as Amended", "as_amended", "approved_as_amended", "as Amended"),
+    ],
+)
+def test_qualified_approval_has_base_precise_qualifier_and_exact_evidence(
+    text, qualifier, legacy, qualifier_text
+):
+    event = extract_events_from_text(95, text)[0]
+    assert event["outcome"] == "approved"
+    assert event["outcome_qualifier"] == qualifier
+    assert event["legacy_outcome"] == legacy
+    start = event["outcome_qualifier_offset_start"]
+    end = event["outcome_qualifier_offset_end"]
+    assert text[start:end] == qualifier_text == event["outcome_qualifier_text"]
+    assert text[event["text_offset_start"]:event["text_offset_end"]] == text
+
+
+def test_plain_approval_keeps_unqualified_backward_shape():
+    event = extract_events_from_text(96, "Approved")[0]
+    assert event["outcome"] == "approved"
+    assert "outcome_qualifier" not in event
+    assert "legacy_outcome" not in event
 
 
 def test_compound_results_never_join_across_logical_rows_without_geometry():

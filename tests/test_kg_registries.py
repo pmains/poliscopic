@@ -60,6 +60,13 @@ def test_approved_permits_each_of_its_qualifiers():
             )
 
 
+def test_as_amended_legacy_form_preserves_split_compatibility():
+    assert events.canonicalize_outcome("approved_as_amended") == (
+        events.CanonicalOutcome("approved", "as_amended")
+    )
+    assert "approved_as_amended" in events.accepted_outcome_forms("approved")
+
+
 def test_denied_permits_without_prejudice():
     assert events.canonicalize_outcome("denied_without_prejudice") == (
         events.CanonicalOutcome("denied", "without_prejudice")
