@@ -51,7 +51,7 @@ def test_prior_terminal_requires_same_target_plan_backup_and_batch_contract(tmp_
                              selected=100)["offset"] == 0
     assert_raises = False
     try:
-        C._prior_terminal(path, prior_packet=old, packet={**new, "batch_size": 200},
+        C._prior_terminal(path, prior_packet=old, packet={**new, "batch_size": 50},
                           plan={"digest": "b" * 64}, selected=100)
     except C.ContinuationRefused:
         assert_raises = True
@@ -76,6 +76,19 @@ def test_later_cursor_requires_contiguous_zero_failure_aggregate(tmp_path):
         pass
     else:
         raise AssertionError("cursor gap must refuse")
+
+
+def test_checkpoint_allows_only_explicitly_bounded_upward_batch_transition(tmp_path):
+    old = {"digest": "a" * 64, "target": TARGET, "plan_digest": "b" * 64,
+           "backup_receipt_digest": "c" * 64, "batch_size": 100}
+    aggregate = {"kind": C.KIND, "version": C.VERSION, "authorized_packet_digest": old["digest"],
+                 "plan_digest": old["plan_digest"], "start_offset": 0, "max_batches": 1,
+                 "windows": [{"offset": 0, "selected": 100}],
+                 "totals": {"failed": 0, "swept_at_updates": 0}, "outcome": "complete_window"}
+    path = tmp_path / "upward.json"
+    write_immutable(path, aggregate)
+    C._prior_aggregate(path, prior_packet=old, packet={**old, "batch_size": 500},
+                       plan={"digest": old["plan_digest"]}, start_offset=100)
 
 
 def test_continuation_driver_is_serial_batch_only_and_never_sweeps():

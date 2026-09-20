@@ -77,9 +77,13 @@ def _prior_terminal(path: Path, *, prior_packet: Mapping[str, Any], packet: Mapp
     problems = _valid_terminal(terminal, packet=prior_packet, plan=plan, offset=0, selected=selected)
     if prior_packet.get("digest") != terminal.get("authorized_packet_digest"):
         problems.append("prior terminal does not bind the supplied prior packet")
-    for field in ("target", "plan_digest", "backup_receipt_digest", "batch_size"):
+    for field in ("target", "plan_digest", "backup_receipt_digest"):
         if prior_packet.get(field) != packet.get(field):
             problems.append(f"prior packet {field} differs from current packet")
+    old_size, new_size = prior_packet.get("batch_size"), packet.get("batch_size")
+    if (not isinstance(old_size, int) or not isinstance(new_size, int)
+            or old_size < 1 or new_size < old_size):
+        problems.append("batch-size transition is not an explicitly bounded non-decreasing change")
     if problems:
         raise ContinuationRefused(f"prior terminal cannot be imported: {problems}")
     return {**terminal, "terminal_receipt_path": str(path)}
@@ -96,9 +100,13 @@ def _prior_aggregate(path: Path, *, prior_packet: Mapping[str, Any], packet: Map
         problems.append("prior aggregate does not bind supplied prior packet")
     if value.get("plan_digest") != plan.get("digest") or value.get("outcome") != "complete_window":
         problems.append("prior aggregate plan/outcome is not resumable")
-    for field in ("target", "plan_digest", "backup_receipt_digest", "batch_size"):
+    for field in ("target", "plan_digest", "backup_receipt_digest"):
         if prior_packet.get(field) != packet.get(field):
             problems.append(f"prior packet {field} differs from current packet")
+    old_size, new_size = prior_packet.get("batch_size"), packet.get("batch_size")
+    if (not isinstance(old_size, int) or not isinstance(new_size, int)
+            or old_size < 1 or new_size < old_size):
+        problems.append("batch-size transition is not an explicitly bounded non-decreasing change")
     windows = list(value.get("windows") or [])
     cursor = int(value.get("start_offset") or 0)
     if cursor != 0 or not windows:
