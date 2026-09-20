@@ -44,6 +44,7 @@ CODE_FILES = ("scripts/kg/stage3_processing_receipt_apply.py",
               "scripts/kg/stage3_processing_receipt.py",
               "scripts/kg/stage3_processing_plan_validator.py",
               "scripts/kg/stage3_processing_receipt_apply_run.py",
+              "scripts/kg/stage3_processing_receipt_continue.py",
               "scripts/entities/sweep_docs_extraction.py")
 
 
