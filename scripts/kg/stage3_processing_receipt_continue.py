@@ -70,6 +70,21 @@ def _existing(terminal_dir: Path, *, packet: Mapping[str, Any], plan: Mapping[st
     return matches[0] if matches else None
 
 
+def _prior_terminal(path: Path, *, prior_packet: Mapping[str, Any], packet: Mapping[str, Any],
+                    plan: Mapping[str, Any], selected: int) -> dict[str, Any]:
+    """Accept one explicitly named terminal from the immediately prior code packet."""
+    terminal = load_verified(path)
+    problems = _valid_terminal(terminal, packet=prior_packet, plan=plan, offset=0, selected=selected)
+    if prior_packet.get("digest") != terminal.get("authorized_packet_digest"):
+        problems.append("prior terminal does not bind the supplied prior packet")
+    for field in ("target", "plan_digest", "backup_receipt_digest", "batch_size"):
+        if prior_packet.get(field) != packet.get(field):
+            problems.append(f"prior packet {field} differs from current packet")
+    if problems:
+        raise ContinuationRefused(f"prior terminal cannot be imported: {problems}")
+    return {**terminal, "terminal_receipt_path": str(path)}
+
+
 def _aggregate(*, packet: Mapping[str, Any], plan: Mapping[str, Any], windows: list[Mapping[str, Any]],
                start_offset: int, max_batches: int, stopped: str | None) -> dict[str, Any]:
     totals = {field: sum(int(window.get(field) or 0) for window in windows)
@@ -88,19 +103,27 @@ def _aggregate(*, packet: Mapping[str, Any], plan: Mapping[str, Any], windows: l
 def continue_batches(engine: Any, *, plan: Mapping[str, Any], design_packet: Mapping[str, Any],
                      apply_packet: Mapping[str, Any], backup_path: Path, token: str,
                      terminal_dir: Path, aggregate_out: Path, start_offset: int,
-                     max_batches: int) -> dict[str, Any]:
+                     max_batches: int, prior_packet: Mapping[str, Any] | None = None,
+                     prior_terminal_path: Path | None = None) -> dict[str, Any]:
     if not terminal_dir.is_dir() or max_batches < 1 or start_offset < 0:
         raise ContinuationRefused("existing terminal directory, non-negative offset, and positive max batches are required")
     if aggregate_out.exists():
         raise ContinuationRefused("aggregate receipt path already exists")
+    if (prior_packet is None) != (prior_terminal_path is None):
+        raise ContinuationRefused("prior packet and prior terminal must be supplied together")
     records = list(plan.get("records") or [])
+    imported_prior = (_prior_terminal(prior_terminal_path, prior_packet=prior_packet,
+                                      packet=apply_packet, plan=plan,
+                                      selected=min(int(apply_packet["batch_size"]), len(records)))
+                      if prior_packet is not None and prior_terminal_path is not None else None)
     windows: list[dict[str, Any]] = []
     stopped: str | None = None
     batches_started = 0
     offset = start_offset
     while offset < len(records) and batches_started < max_batches:
         selected = min(int(apply_packet["batch_size"]), len(records) - offset)
-        terminal = _existing(terminal_dir, packet=apply_packet, plan=plan, offset=offset, selected=selected)
+        terminal = imported_prior if imported_prior is not None and offset == 0 else _existing(
+            terminal_dir, packet=apply_packet, plan=plan, offset=offset, selected=selected)
         if terminal is None:
             terminal = apply.apply_batch(engine, plan=plan, design_packet=design_packet,
                                          apply_packet=apply_packet, backup_path=backup_path,
@@ -138,12 +161,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--aggregate-out", type=Path, required=True)
     parser.add_argument("--start-offset", type=int, default=0)
     parser.add_argument("--max-batches", type=int, required=True)
+    parser.add_argument("--prior-apply", type=Path,
+                        help="immutable packet that owns an explicitly imported prior terminal")
+    parser.add_argument("--prior-terminal", type=Path,
+                        help="terminal receipt to import instead of replaying offset zero")
     args = parser.parse_args(argv)
     result = continue_batches(get_engine(), plan=load_verified(args.plan), design_packet=load_verified(args.design),
                               apply_packet=load_verified(args.apply), backup_path=args.backup,
                               token=args.authorization_token, terminal_dir=args.terminal_dir,
                               aggregate_out=args.aggregate_out, start_offset=args.start_offset,
-                              max_batches=args.max_batches)
+                              max_batches=args.max_batches,
+                              prior_packet=load_verified(args.prior_apply) if args.prior_apply else None,
+                              prior_terminal_path=args.prior_terminal)
     print(json.dumps(result, sort_keys=True))
     return 0
 

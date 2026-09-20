@@ -40,10 +40,29 @@ def test_existing_terminal_is_verified_and_duplicate_offsets_refuse(tmp_path):
         raise AssertionError("corrupt terminal must refuse continuation")
 
 
+def test_prior_terminal_requires_same_target_plan_backup_and_batch_contract(tmp_path):
+    terminal = _terminal()
+    path = tmp_path / "prior.json"
+    write_immutable(path, terminal)
+    old = {"digest": "a" * 64, "target": TARGET, "plan_digest": "b" * 64,
+           "backup_receipt_digest": "c" * 64, "batch_size": 100}
+    new = dict(old)
+    assert C._prior_terminal(path, prior_packet=old, packet=new, plan={"digest": "b" * 64},
+                             selected=100)["offset"] == 0
+    assert_raises = False
+    try:
+        C._prior_terminal(path, prior_packet=old, packet={**new, "batch_size": 200},
+                          plan={"digest": "b" * 64}, selected=100)
+    except C.ContinuationRefused:
+        assert_raises = True
+    assert assert_raises
+
+
 def test_continuation_driver_is_serial_batch_only_and_never_sweeps():
     source = open(C.__file__).read()
     assert "apply.apply_batch" in source
     assert "load_verified(terminal" in source
     assert "more than one terminal receipt" in source
     assert "terminal_failure" in source
+    assert "prior terminal cannot be imported" in source
     assert "UPDATE supporting_documents SET swept_at" not in source
