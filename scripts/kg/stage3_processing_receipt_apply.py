@@ -30,7 +30,10 @@ from scripts.kg import stage3_processing_plan_validator as validator
 from scripts.kg.stage2_artifacts import load_verified, write_immutable
 
 REPO = Path(__file__).resolve().parents[2]
-EXECUTION_ENABLED = False
+# This guarded path is enabled only for the separately authorized development
+# execution.  It remains unreachable without a current immutable apply packet,
+# fresh restore-verified backup, exact target, and the explicit token below.
+EXECUTION_ENABLED = True
 AUTHORIZATION_TOKEN = "stage3-processing-receipt-development-apply/v1"
 LOCK_ID = 7303202609201
 CODE_FILES = ("scripts/kg/stage3_processing_receipt_apply.py",
@@ -40,6 +43,7 @@ CODE_FILES = ("scripts/kg/stage3_processing_receipt_apply.py",
               "scripts/kg/stage3_processing_receipt_store_backup.py",
               "scripts/kg/stage3_processing_receipt.py",
               "scripts/kg/stage3_processing_plan_validator.py",
+              "scripts/kg/stage3_processing_receipt_apply_run.py",
               "scripts/entities/sweep_docs_extraction.py")
 
 
@@ -120,6 +124,11 @@ def _schema_is_complete(connection: Any) -> bool:
     return columns == expected and {schema.TRIGGER_ROW, schema.TRIGGER_TRUNCATE} <= triggers
 
 
+def _pgcrypto_available(connection: Any) -> bool:
+    """Receipt DDL uses ``digest``; do not discover a missing extension mid-apply."""
+    return connection.execute(text("SELECT to_regprocedure('digest(bytea,text)') IS NOT NULL")).scalar_one() is True
+
+
 def _terminal(*, packet: Mapping[str, Any], plan: Mapping[str, Any], offset: int,
               selected: int, success: int, failed: int, held: int, replay: int) -> dict[str, Any]:
     body = {"kind": "kg-stage3-processing-receipt-apply-terminal", "version": "1.0",
@@ -152,7 +161,7 @@ def apply_batch(engine: Any, *, plan: Mapping[str, Any], design_packet: Mapping[
                 authorization_token: str, offset: int = 0,
                 terminal_dir: Path | None = None) -> dict[str, Any]:
     """Execute one exact plan window after every admission check; disabled by default."""
-    if terminal_dir is None:
+    if terminal_dir is None or not terminal_dir.is_dir():
         raise ApplyRefused("an existing terminal-receipt directory is required before any write")
     problems = gate(engine=engine, plan=plan, design_packet=design_packet, apply_packet=apply_packet,
                     backup_path=backup_path, authorization_token=authorization_token)
@@ -167,6 +176,8 @@ def apply_batch(engine: Any, *, plan: Mapping[str, Any], design_packet: Mapping[
         try:
             connection.execute(text("SET LOCAL TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
             connection.execute(text("SELECT pg_advisory_xact_lock(:lock)"), {"lock": LOCK_ID})
+            if not _pgcrypto_available(connection):
+                raise ApplyRefused("pgcrypto digest(bytea,text) capability is unavailable")
             # The schema is additive and is created only once, under the same lock.
             present = connection.execute(text("SELECT to_regclass('processing_receipts')")).scalar_one()
             if present is None:
@@ -224,6 +235,8 @@ def compensating_rollback(engine: Any, *, plan: Mapping[str, Any], design_packet
         try:
             connection.execute(text("SET LOCAL TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
             connection.execute(text("SELECT pg_advisory_xact_lock(:lock)"), {"lock": LOCK_ID})
+            if not _pgcrypto_available(connection):
+                raise ApplyRefused("pgcrypto digest(bytea,text) capability is unavailable")
             if connection.execute(text("SELECT to_regclass('processing_receipts')")).scalar_one() is None or not _schema_is_complete(connection):
                 raise ApplyRefused("receipt store is absent or partial; compensation is refused")
             for record in records:

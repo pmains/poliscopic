@@ -16,8 +16,8 @@ def test_apply_authorization_is_bound_to_the_current_reviewed_artifacts():
     assert P.validate({**value, "enabled": False}, plan=plan, design_packet=design)
 
 
-def test_runner_is_disabled_and_has_no_false_success_surface():
-    assert A.EXECUTION_ENABLED is False
+def test_enabled_runner_still_has_no_false_success_surface():
+    assert A.EXECUTION_ENABLED is True
     assert "SERIALIZABLE" in A.apply_batch.__doc__ or "SERIALIZABLE" in open(A.__file__).read()
     assert "pg_advisory_xact_lock" in open(A.__file__).read()
     assert "UPDATE supporting_documents SET swept_at" not in open(A.__file__).read()
@@ -28,3 +28,12 @@ def test_runner_is_disabled_and_has_no_false_success_surface():
     assert "terminal-receipt directory is required" in source
     assert "extract_entities_from_doc" in source
     assert "Callable[[Mapping" not in source
+    assert "digest(bytea,text) capability is unavailable" in source
+    assert "terminal_dir.is_dir()" in source
+
+
+def test_cli_cannot_supply_an_alternate_database_target():
+    from scripts.kg import stage3_processing_receipt_apply_run as runner
+
+    assert "--database" not in open(runner.__file__).read()
+    assert "get_engine()" in open(runner.__file__).read()
