@@ -9,7 +9,6 @@ new temporary PostgreSQL cluster, never in the live development database.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import socket
@@ -30,6 +29,7 @@ for _candidate in (str(REPO), str(REPO / "scripts")):
 from db.core import get_engine  # noqa: E402
 from scripts.kg import stage2_artifacts as artifacts  # noqa: E402
 from scripts.kg import stage2_backup_verify as verify  # noqa: E402
+from scripts.kg.stage3_processing_receipt_store_backup import file_sha256  # noqa: E402
 
 PG = Path("/opt/homebrew/opt/postgresql@18/bin")
 
@@ -82,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
           "-U", str(source.url.username), "-d", str(source.url.database),
           "-f", str(dump_path)], env=env)
     os.chmod(dump_path, 0o600)
-    dump_sha = hashlib.sha256(dump_path.read_bytes()).hexdigest()
+    dump_sha = file_sha256(dump_path)
     port = _free_port()
     comparisons = {key: True for key in ("dump_restored", "counts_match", "schema_match",
                    "integrity_match", "target_identity_match", "agenda_items_signature_match",

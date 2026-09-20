@@ -44,6 +44,15 @@ BACKUP_REQUIREMENT = {
 }
 
 
+def file_sha256(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
+    """Hash retained dumps without materialising a multi-gigabyte file in RAM."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(chunk_size):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def freshness_problem(created_at: Any, *, now: datetime | None,
                       max_age_seconds: int = MAX_BACKUP_AGE_SECONDS) -> str | None:
     """Refuse a stale, future-dated, or unparseable backup."""
@@ -120,7 +129,7 @@ def backup_problems(backup_path: str | Path | None, *, target: Mapping[str, Any]
     dump_path = Path(str(document.get("dump_path") or ""))
     if not dump_path.is_file():
         problems.append("the backup receipt names a missing dump")
-    elif hashlib.sha256(dump_path.read_bytes()).hexdigest() != document.get("dump_sha256"):
+    elif file_sha256(dump_path) != document.get("dump_sha256"):
         problems.append("the dump digest does not match the receipt")
     freshness = freshness_problem(document.get("created_at"), now=now,
                                   max_age_seconds=max_age_seconds)

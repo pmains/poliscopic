@@ -42,6 +42,7 @@ CODE_FILES = ("scripts/kg/stage3_processing_receipt_apply.py",
               "scripts/kg/stage3_processing_receipt_store_schema.py",
               "scripts/kg/stage3_processing_receipt_store_rows.py",
               "scripts/kg/stage3_processing_receipt_store_backup.py",
+              "scripts/kg/stage3_processing_receipt_backup_run.py",
               "scripts/kg/stage3_processing_receipt.py",
               "scripts/kg/stage3_processing_plan_validator.py",
               "scripts/kg/stage3_processing_receipt_apply_run.py",
@@ -49,6 +50,7 @@ CODE_FILES = ("scripts/kg/stage3_processing_receipt_apply.py",
               "scripts/kg/stage3_processing_receipt_checkpoint.py",
               "scripts/kg/stage3_processing_receipt_preflight.py",
               "scripts/kg/stage3_processing_receipt_serenity_runner.py",
+              "scripts/kg/stage3_processing_receipt_serenity_bootstrap.py",
               "scripts/entities/sweep_docs_extraction.py")
 
 
