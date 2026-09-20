@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "scripts"))
 from db import get_engine
 from docs.layout_extract import load_artifact_for_text
+from entities.event_compound_results import attach_compound_result_groups
 from entities.event_result_context import non_current_result_reason
 from sqlalchemy import text
 
@@ -41,8 +42,10 @@ ACTION_PATTERNS = [
     # Multi-word actions (must come before single-word)
     (r"APPROVED\s+WITH\s+STIPULATIONS",     "approved_with_conditions"),
     (r"APPROVED\s+WITH\s+CONDITIONS",        "approved_with_conditions"),
-    (r"APPROVED\s+SUBJECT\s+TO",             "approved_with_conditions"),
+    (r"APPROVED\s+SUBJECT\s+TO(?:\s+(?:STIPULATIONS|CONDITIONS))?",
+                                                "approved_with_conditions"),
     (r"DENIED\s+WITHOUT\s+PREJUDICE",        "denied_without_prejudice"),
+    (r"DENIED\s+AS\s+FILED",                 "denied"),
     (r"RECEIVED\s+AND\s+FILED",              "received"),
     (r"CALLED\s+TO\s+ORDER",                 "called_to_order"),
 
@@ -193,6 +196,7 @@ def extract_events_from_text(
     for scoped_text, scope_start, row, regions in _evidence_scopes(
         text_content, layout_artifact
     ):
+        scope_events = []
         for match in ACTION_RE.finditer(scoped_text):
             action_verb = match.group(0).strip()
             action_start = scope_start + match.start()
@@ -252,7 +256,7 @@ def extract_events_from_text(
             else:
                 confidence = 0.9 if column < 15 else 0.7
 
-            events.append({
+            scope_events.append({
                 "raw_text": raw_text[:1000],
                 "action_verb": action_verb,
                 "outcome": outcome,
@@ -264,6 +268,14 @@ def extract_events_from_text(
                 "layout_role": region.get("role") if region else None,
                 "layout_item_number": region.get("item_number") if region else None,
             })
+
+        events.extend(attach_compound_result_groups(
+            scope_events,
+            document_id=doc_id,
+            evidence_text=scoped_text,
+            evidence_start=scope_start,
+            row_id=str(row.get("row_id")) if row and row.get("row_id") else None,
+        ))
 
     return events
 

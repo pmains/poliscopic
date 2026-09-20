@@ -141,6 +141,18 @@ def test_event_extraction_accepts_later_rows_and_compound_actions(tmp_path):
     compound = "Discussed and Approved"
     compound_events = extract_events_from_text(2, compound)
     assert [event["outcome"] for event in compound_events] == ["discussed", "approved"]
+    assert len({event["compound_result_group_id"] for event in compound_events}) == 1
+    assert [event["compound_result_member_index"] for event in compound_events] == [1, 2]
+    assert all(event["compound_result_member_count"] == 2 for event in compound_events)
+    assert all(
+        event["compound_result_qualifier_context"] == compound
+        for event in compound_events
+    )
+    assert all(
+        (event["compound_result_span_start"], event["compound_result_span_end"])
+        == (0, len(compound))
+        for event in compound_events
+    )
 
     assert extract_events_from_text(3, "Approved by unanimous vote")[0]["outcome"] == "approved"
 
@@ -237,3 +249,36 @@ def test_context_classifier_preserves_current_results_and_offsets(text, outcomes
     for event in events:
         start, end = event["text_offset_start"], event["text_offset_end"]
         assert text[start:end] == event["action_verb"]
+
+
+def test_compound_result_group_is_stable_and_preserves_member_offsets():
+    text = "Denied as Filed / Approved Subject to Stipulations"
+    first = extract_events_from_text(91, text)
+    second = extract_events_from_text(91, text)
+    assert [event["outcome"] for event in first] == [
+        "denied", "approved_with_conditions",
+    ]
+    assert [event["compound_result_group_id"] for event in first] == [
+        event["compound_result_group_id"] for event in second
+    ]
+    assert first[0]["compound_result_group_id"] == first[1]["compound_result_group_id"]
+    for event in first:
+        start, end = event["text_offset_start"], event["text_offset_end"]
+        assert text[start:end] == event["action_verb"]
+
+
+def test_compound_results_never_join_across_logical_rows_without_geometry():
+    events = extract_events_from_text(92, "Discussed\nApproved")
+    assert [event["outcome"] for event in events] == ["discussed", "approved"]
+    assert all("compound_result_group_id" not in event for event in events)
+
+
+def test_compound_group_requires_connector_only_text_between_actions():
+    events = extract_events_from_text(94, "Discussed application and Approved plans")
+    assert [event["outcome"] for event in events] == ["discussed", "approved"]
+    assert all("compound_result_group_id" not in event for event in events)
+
+
+def test_standalone_event_shape_remains_backward_compatible():
+    event = extract_events_from_text(93, "Approved")[0]
+    assert not any(key.startswith("compound_result_") for key in event)
