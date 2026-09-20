@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from scripts.kg import stage3_b3_result_derived_packet as packet
+from scripts.kg import stage3_b3_result_derived_apply as apply
 from scripts.kg import stage3_b3_result_derived_plan as subject
 from scripts.kg.stage2_artifacts import load_verified, write_immutable
 
@@ -58,9 +59,27 @@ def test_drift_existing_items_and_event_lineage_refuse_or_hold(tmp_path):
 
 def test_disabled_packet_is_exactly_bound_and_never_executes(tmp_path):
     plan, path = build(tmp_path); plan_path = tmp_path / "plan.json"; write_immutable(plan_path, plan)
+    # The production packet intentionally admits only the reviewed live plan digest;
+    # exercise its mechanics with a local copy after preserving the test plan content.
+    original = packet.EXPECTED_PLAN_DIGEST; packet.EXPECTED_PLAN_DIGEST = plan["digest"]
     value = packet.build_packet(plan_path=plan_path, created_at="now")
     assert value["enabled"] is False
     assert packet.validate_packet(value, plan_path=plan_path) == []
+    packet.EXPECTED_PLAN_DIGEST = original
     with pytest.raises(packet.WritePathNotImplemented): packet.execute_packet()
     assert len(packet.rollback_preflight(packet=value, receipt_verified=False, dependent_rows=1, source_drift=True)) == 3
     assert load_verified(plan_path)["digest"] == plan["digest"]
+
+
+def test_offline_apply_gate_requires_post_receipts_backup_and_is_never_enabled(tmp_path):
+    plan, path = build(tmp_path); plan_path = tmp_path / "plan.json"; write_immutable(plan_path, plan)
+    original = packet.EXPECTED_PLAN_DIGEST; packet.EXPECTED_PLAN_DIGEST = plan["digest"]
+    value = packet.build_packet(plan_path=plan_path, created_at="now")
+    packet.EXPECTED_PLAN_DIGEST = original
+    problems = apply.gate(packet=value, backup_binding=None, current_target=value["target"],
+                          current_schema_sha256="a" * 64,
+                          authorization_token=apply.AUTHORIZATION_TOKEN,
+                          processing_receipts_complete=False)
+    assert "processing-receipt mutation/replay is not complete" in problems
+    assert "post-receipts restore-verified B3 backup is absent" in problems
+    with pytest.raises(apply.ApplyRefused): apply.execute()
