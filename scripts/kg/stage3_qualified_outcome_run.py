@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from datetime import datetime, timezone
@@ -44,6 +45,14 @@ def _rows(engine):
         return group_projection_rows([dict(row) for row in connection.execute(text(query)).mappings()])
 
 
+def _load_backup_receipt(path: Path) -> dict:
+    """Load the externally verified Stage 2 receipt (which has no inner digest)."""
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise RuntimeError("backup receipt must be a JSON object")
+    return value
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -73,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError("explicit qualified-outcome authorization token required")
         plan = load_verified(args.plan_artifact)
         design = load_verified(args.design)
-        backup = load_verified(args.backup_receipt)
+        backup = _load_backup_receipt(args.backup_receipt)
         if schema != plan.get("schema_digest") or code != plan.get("code_digest"):
             raise RuntimeError("live schema or code no longer matches the reviewed plan")
         provisional = build_apply_packet(
@@ -92,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     plan = load_verified(args.plan_artifact)
     design = load_verified(args.design)
     authorized = load_verified(args.apply)
-    backup = load_verified(args.backup_receipt)
+    backup = _load_backup_receipt(args.backup_receipt)
     rows = _rows(engine)
     result = apply(engine, design_packet=design, apply_packet=authorized, plan=plan,
                    source_rows=rows, backup_receipt=backup, authorization=token,

@@ -16,6 +16,7 @@ from scripts.kg.stage3_qualified_outcome_apply import (
 from scripts.kg.stage3_qualified_outcome_apply_packet import (
     build_apply_packet, validate_apply_packet,
 )
+from scripts.kg.stage3_qualified_outcome_run import _load_backup_receipt
 from scripts.kg.stage2_artifacts import compute_digest
 from scripts.kg.stage2_backup_verify import (
     build_receipt as build_backup_receipt, canonical_sha256,
@@ -203,6 +204,12 @@ def authorities(plan):
         design_packet=design, plan=plan, backup_receipt_digest=compute_digest(receipt),
         code_digest=plan["code_digest"], schema_digest=plan["schema_digest"])
     return design, authorized, receipt
+
+
+def test_external_backup_receipt_load_does_not_require_inner_digest(tmp_path):
+    path = tmp_path / "backup.json"
+    path.write_text(__import__("json").dumps({"kind": "kg-stage2-backup-receipt"}))
+    assert _load_backup_receipt(path)["kind"] == "kg-stage2-backup-receipt"
 
 
 def test_apply_gate_requires_every_backup_target_schema_code_and_source_binding():
