@@ -14,6 +14,8 @@ from __future__ import annotations
 import hashlib
 import json
 import argparse
+from datetime import datetime
+import math
 import re
 import sys
 from collections import Counter, defaultdict
@@ -57,6 +59,17 @@ def _required_text(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise HoldoutRefused(f"{field} is required")
     return value.strip()
+
+
+def _approved_timestamp(value: Any) -> str:
+    text = _required_text(value, "thresholds.approved_at")
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError("timezone required")
+    except ValueError as exc:
+        raise HoldoutRefused("thresholds.approved_at must be an ISO-8601 timestamp") from exc
+    return text
 
 
 def _positive(value: Any, field: str) -> int:
@@ -238,10 +251,43 @@ def evaluate_labels(packet: Mapping[str, Any], reviews: Mapping[int | str, Mappi
     """Evaluate human labels; no matching or semantic truth is inferred here."""
     if packet.get("kind") != KIND or packet.get("digest") != canonical_sha256({k: v for k, v in packet.items() if k != "digest"}):
         raise HoldoutRefused("packet digest or kind is invalid")
+    if (packet.get("mode") != "review-only" or packet.get("applied") is not False
+            or packet.get("write_path") != "absent by design"
+            or packet.get("target") != TARGET):
+        raise HoldoutRefused("packet is not an unapplied development review packet")
+    contract = packet.get("threshold_contract")
+    if (not isinstance(contract, Mapping) or contract.get("approved") is not False
+            or not isinstance(contract.get("decision_required"), str)):
+        raise HoldoutRefused("packet threshold contract is missing or already approved")
+    if not isinstance(reviews, Mapping):
+        raise HoldoutRefused("reviews must be an object")
+    packet_items = packet.get("items")
+    if not isinstance(packet_items, list) or not packet_items:
+        raise HoldoutRefused("holdout packet has no documents to evaluate")
+    document_ids = []
+    for item in packet_items:
+        if not isinstance(item, Mapping) or not isinstance(item.get("document"), Mapping):
+            raise HoldoutRefused("packet item is malformed")
+        document_ids.append(_positive(item["document"].get("document_id"), "packet document_id"))
+        if not isinstance(item.get("predictions"), list):
+            raise HoldoutRefused("packet predictions must be a list")
+    if len(document_ids) != len(set(document_ids)):
+        raise HoldoutRefused("packet contains duplicate document IDs")
+    expected_review_keys = {str(document_id) for document_id in document_ids}
+    supplied_review_keys = {str(key) for key in reviews}
+    if len(reviews) != len(expected_review_keys) or supplied_review_keys != expected_review_keys:
+        raise HoldoutRefused("reviews must exactly cover the packet documents")
     results, totals = [], Counter()
     slice_counts: dict[tuple[str, ...], Counter] = defaultdict(Counter)
-    for item in packet.get("items", []):
+    for item in packet_items:
         doc = item["document"]; key = str(doc["document_id"])
+        for field in DIMENSIONS:
+            _required_text(doc.get(field), f"packet document.{field}")
+        for prediction in item["predictions"]:
+            if not isinstance(prediction, Mapping):
+                raise HoldoutRefused(f"document {key} packet prediction is malformed")
+            _required_text(prediction.get("prediction_id"), "packet prediction_id")
+            _required_text(prediction.get("predicate"), "packet prediction.predicate")
         review = reviews.get(key, reviews.get(doc["document_id"]))
         if not isinstance(review, Mapping) or review.get("coverage") != "complete":
             raise HoldoutRefused(f"document {key} is not marked complete")
@@ -249,6 +295,10 @@ def evaluate_labels(packet: Mapping[str, Any], reviews: Mapping[int | str, Mappi
         predictions = review.get("prediction_labels")
         if not isinstance(actions, list) or not isinstance(predictions, list):
             raise HoldoutRefused(f"document {key} lacks complete gold actions and prediction labels")
+        if any(not isinstance(action, Mapping) for action in actions):
+            raise HoldoutRefused(f"document {key} has a malformed gold action")
+        if any(not isinstance(label, Mapping) for label in predictions):
+            raise HoldoutRefused(f"document {key} has a malformed prediction label")
         action_ids = [_required_text(a.get("action_id"), "gold action_id") for a in actions]
         if len(action_ids) != len(set(action_ids)):
             raise HoldoutRefused(f"document {key} has duplicate gold action IDs")
@@ -264,8 +314,14 @@ def evaluate_labels(packet: Mapping[str, Any], reviews: Mapping[int | str, Mappi
                 raise HoldoutRefused(f"document {key} has invalid gold temporal attribution")
             if action.get("qualifier") is not None and not isinstance(action.get("qualifier"), str):
                 raise HoldoutRefused(f"document {key} has invalid gold qualifier")
-        pred_ids = {p.get("prediction_id") for p in item["predictions"]}
-        if {p.get("prediction_id") for p in predictions} != pred_ids:
+        pred_ids = [p.get("prediction_id") for p in item["predictions"]]
+        if len(pred_ids) != len(set(pred_ids)):
+            raise HoldoutRefused(f"document {key} packet has duplicate prediction IDs")
+        if any(not isinstance(value, str) or not value for value in pred_ids):
+            raise HoldoutRefused(f"document {key} packet has invalid prediction IDs")
+        if len({p.get("prediction_id") for p in predictions}) != len(predictions):
+            raise HoldoutRefused(f"document {key} has duplicate prediction labels")
+        if {p.get("prediction_id") for p in predictions} != set(pred_ids):
             raise HoldoutRefused(f"document {key} prediction labels are not complete")
         matched = set()
         action_by_id = {action["action_id"]: action for action in actions}
@@ -322,13 +378,22 @@ def evaluate_labels(packet: Mapping[str, Any], reviews: Mapping[int | str, Mappi
         precision_den = counts["precision_tp"] + counts["precision_fp"]
         recall_den = counts["recall_tp"] + counts["recall_fn"]
         slices["|".join(key)] = {"dimensions": dict(zip(CELL_FIELDS, key)),
-                                  "counts": dict(counts),
+                                  "counts": {name: counts[name] for name in
+                                             ("precision_tp", "precision_fp", "recall_tp", "recall_fn")},
                                   "precision": _ratio(counts["precision_tp"], precision_den),
                                   "recall": _ratio(counts["recall_tp"], recall_den),
                                   "minimum_denominator": {"precision": precision_den,
                                                            "recall": recall_den}}
-    return {"packet_digest": packet["digest"], "documents": results,
-            "totals": dict(totals),
+    if not slices:
+        raise HoldoutRefused("evaluation has no predicate slices; no quality gate may pass")
+    precision_total = sum(item["counts"].get("precision_tp", 0) + item["counts"].get("precision_fp", 0)
+                          for item in slices.values())
+    recall_total = sum(item["counts"].get("recall_tp", 0) + item["counts"].get("recall_fn", 0)
+                       for item in slices.values())
+    if precision_total != totals["tp"] + totals["fp"] or recall_total != totals["tp"] + totals["fn"]:
+        raise HoldoutRefused("slice counts do not reconcile with global counts")
+    body = {"packet_digest": packet["digest"], "documents": results,
+            "totals": {**dict(totals), "tp": totals["tp"], "fp": totals["fp"], "fn": totals["fn"]},
             "metrics": {"precision": _ratio(totals["tp"], totals["tp"] + totals["fp"]),
                         "recall": _ratio(totals["tp"], totals["tp"] + totals["fn"]),
                         "new_false_positives": totals["fp"], "misses": totals["fn"],
@@ -336,6 +401,8 @@ def evaluate_labels(packet: Mapping[str, Any], reviews: Mapping[int | str, Mappi
                         "item_association": _ratio(totals["item_association_ok"], totals["item_association_ok"] + totals["item_association_bad"]),
                         "temporal_attribution": _ratio(totals["temporal_attribution_ok"], totals["temporal_attribution_ok"] + totals["temporal_attribution_bad"]),
                         "by_source_body_document_type_extraction_method_predicate": slices}}
+    body["evaluation_digest"] = canonical_sha256(body)
+    return body
 
 
 def evaluate_thresholds(evaluation: Mapping[str, Any], thresholds: Mapping[str, Any]) -> dict[str, Any]:
@@ -347,29 +414,56 @@ def evaluate_thresholds(evaluation: Mapping[str, Any], thresholds: Mapping[str, 
     """
     if not isinstance(thresholds, Mapping) or thresholds.get("approved") is not True:
         raise HoldoutRefused("human-approved thresholds are required")
+    _required_text(thresholds.get("version"), "thresholds.version")
     _required_text(thresholds.get("approved_by"), "thresholds.approved_by")
-    _required_text(thresholds.get("approved_at"), "thresholds.approved_at")
+    _approved_timestamp(thresholds.get("approved_at"))
+    if (not isinstance(evaluation, Mapping)
+            or evaluation.get("evaluation_digest") != canonical_sha256(
+                {k: v for k, v in evaluation.items() if k != "evaluation_digest"})):
+        raise HoldoutRefused("evaluation digest is missing or invalid")
     floors = thresholds.get("minimum_denominators")
     if (not isinstance(floors, Mapping) or
-            not isinstance(floors.get("precision"), int) or floors.get("precision", 0) < 1 or
-            not isinstance(floors.get("recall"), int) or floors.get("recall", 0) < 1):
+            not isinstance(floors.get("precision"), int) or isinstance(floors.get("precision"), bool) or floors.get("precision", 0) < 1 or
+            not isinstance(floors.get("recall"), int) or isinstance(floors.get("recall"), bool) or floors.get("recall", 0) < 1):
         raise HoldoutRefused("positive precision and recall denominator floors are required")
     configured = thresholds.get("by_slice")
     slices = ((evaluation.get("metrics") or {}).get(
         "by_source_body_document_type_extraction_method_predicate") or {})
+    if not isinstance(slices, Mapping) or not slices:
+        raise HoldoutRefused("evaluation has no observed slices")
     if not isinstance(configured, Mapping):
         raise HoldoutRefused("thresholds.by_slice must explicitly cover every observed slice")
+    if set(configured) != set(slices):
+        raise HoldoutRefused("thresholds.by_slice must exactly match observed slices")
+    totals = evaluation.get("totals")
+    if not isinstance(totals, Mapping):
+        raise HoldoutRefused("evaluation totals are missing")
+    if any(not isinstance(totals.get(name), int) or isinstance(totals.get(name), bool) or totals.get(name, -1) < 0
+           for name in ("tp", "fp", "fn")):
+        raise HoldoutRefused("evaluation totals are malformed")
+    precision_total = recall_total = 0
     decisions = {}
     for key, metrics in sorted(slices.items()):
         policy = configured.get(key)
         if not isinstance(policy, Mapping):
             raise HoldoutRefused(f"missing human threshold for slice {key}")
+        counts = metrics.get("counts") if isinstance(metrics, Mapping) else None
+        if (not isinstance(counts, Mapping)
+                or any(not isinstance(counts.get(name), int) or isinstance(counts.get(name), bool) or counts.get(name, -1) < 0
+                       for name in ("precision_tp", "precision_fp", "recall_tp", "recall_fn"))):
+            raise HoldoutRefused(f"slice {key} counts are malformed")
+        expected_precision = _ratio(counts["precision_tp"], counts["precision_tp"] + counts["precision_fp"])
+        expected_recall = _ratio(counts["recall_tp"], counts["recall_tp"] + counts["recall_fn"])
+        if metrics.get("precision") != expected_precision or metrics.get("recall") != expected_recall:
+            raise HoldoutRefused(f"slice {key} ratios do not match counts")
+        precision_total += counts["precision_tp"] + counts["precision_fp"]
+        recall_total += counts["recall_tp"] + counts["recall_fn"]
         for metric in ("precision", "recall"):
             value = metrics[metric]["value"]
             denominator = metrics[metric]["denominator"]
             threshold = policy.get(metric)
             if (not isinstance(threshold, (int, float)) or isinstance(threshold, bool)
-                    or not 0 <= threshold <= 1):
+                    or not math.isfinite(threshold) or not 0 <= threshold <= 1):
                 raise HoldoutRefused(f"invalid {metric} threshold for slice {key}")
             if denominator < floors[metric]:
                 raise HoldoutRefused(f"undersized {metric} denominator for slice {key}: {denominator} < {floors[metric]}")
@@ -377,6 +471,8 @@ def evaluate_thresholds(evaluation: Mapping[str, Any], thresholds: Mapping[str, 
                 raise HoldoutRefused(f"slice {key} fails {metric} threshold")
         decisions[key] = {"precision": True, "recall": True,
                           "denominators": {metric: metrics[metric]["denominator"] for metric in ("precision", "recall")}}
+    if precision_total != totals.get("tp", -1) + totals.get("fp", -1) or recall_total != totals.get("tp", -1) + totals.get("fn", -1):
+        raise HoldoutRefused("slice denominators do not reconcile with evaluation totals")
     return {"status": "PASS", "approved_by": thresholds["approved_by"],
             "approved_at": thresholds["approved_at"], "minimum_denominators": dict(floors),
             "slices": decisions}

@@ -99,16 +99,33 @@ def test_threshold_evaluator_requires_explicit_complete_slices_and_denominators(
                                "item_association": "correct", "temporal_attribution": "correct"}]}
     evaluation = H.evaluate_labels(value, {"10": review})
     key = next(iter(evaluation["metrics"]["by_source_body_document_type_extraction_method_predicate"]))
-    policy = {"approved": True, "approved_by": "human", "approved_at": "now",
+    policy = {"version": "holdout-thresholds/1.0", "approved": True,
+              "approved_by": "human", "approved_at": "2026-09-20T00:00:00Z",
               "minimum_denominators": {"precision": 1, "recall": 1},
               "by_slice": {key: {"precision": 1.0, "recall": 1.0}}}
     assert H.evaluate_thresholds(evaluation, policy)["status"] == "PASS"
     missing = dict(policy); missing["by_slice"] = {}
-    with pytest.raises(H.HoldoutRefused, match="missing human threshold"):
+    with pytest.raises(H.HoldoutRefused, match="exactly match observed slices"):
         H.evaluate_thresholds(evaluation, missing)
     undersized = dict(policy); undersized["minimum_denominators"] = {"precision": 2, "recall": 1}
     with pytest.raises(H.HoldoutRefused, match="undersized precision"):
         H.evaluate_thresholds(evaluation, undersized)
+    empty_evaluation = {"packet_digest": evaluation["packet_digest"], "documents": [],
+                        "totals": {}, "metrics": {"by_source_body_document_type_extraction_method_predicate": {}}}
+    empty_evaluation["evaluation_digest"] = H.canonical_sha256(empty_evaluation)
+    with pytest.raises(H.HoldoutRefused, match="no observed slices"):
+        H.evaluate_thresholds(empty_evaluation, policy)
+    forged = dict(evaluation)
+    forged["metrics"] = dict(evaluation["metrics"])
+    forged["metrics"]["by_source_body_document_type_extraction_method_predicate"] = dict(
+        evaluation["metrics"]["by_source_body_document_type_extraction_method_predicate"])
+    forged["metrics"]["by_source_body_document_type_extraction_method_predicate"][key] = dict(
+        forged["metrics"]["by_source_body_document_type_extraction_method_predicate"][key])
+    forged["metrics"]["by_source_body_document_type_extraction_method_predicate"][key]["precision"] = {
+        "numerator": 0, "denominator": 1, "value": 0.0, "defined": True}
+    forged["evaluation_digest"] = H.canonical_sha256({k: v for k, v in forged.items() if k != "evaluation_digest"})
+    with pytest.raises(H.HoldoutRefused, match="ratios do not match counts"):
+        H.evaluate_thresholds(forged, policy)
 
 
 def test_temporal_prediction_must_be_correctness_label_not_gold_class():
@@ -122,8 +139,44 @@ def test_temporal_prediction_must_be_correctness_label_not_gold_class():
                                     "temporal_attribution": "current_meeting"}]}})
 
 
+def test_empty_no_candidate_evaluation_cannot_reach_threshold_gate():
+    empty_doc = doc(10)
+    empty_doc["predictions"] = []
+    value = H.build_packet([empty_doc], seed="s", max_documents=1, excluded_ids=set(),
+                           development_population_digest="f" * 64, inventory_binding={}, created_at="now")
+    with pytest.raises(H.HoldoutRefused, match="no predicate slices"):
+        H.evaluate_labels(value, {"10": {"coverage": "complete", "gold_actions": [],
+                                          "prediction_labels": []}})
+
+
+def test_threshold_gate_rejects_malformed_timestamp_and_duplicate_prediction_labels():
+    value = H.build_packet([doc(10)], seed="s", max_documents=1, excluded_ids=set(),
+                           development_population_digest="g" * 64, inventory_binding={}, created_at="now")
+    review = {"coverage": "complete", "gold_actions": [], "prediction_labels": [
+        {"prediction_id": "p-10", "status": "fp", "matched_action_id": None,
+         "qualifier": "not_applicable", "item_association": "not_applicable",
+         "temporal_attribution": "not_applicable"},
+        {"prediction_id": "p-10", "status": "fp", "matched_action_id": None,
+         "qualifier": "not_applicable", "item_association": "not_applicable",
+         "temporal_attribution": "not_applicable"}]}
+    with pytest.raises(H.HoldoutRefused, match="duplicate prediction labels"):
+        H.evaluate_labels(value, {"10": review})
+    # A valid single-label review produces an evaluation whose threshold policy
+    # must still carry an ISO-8601 timestamp.
+    review["prediction_labels"] = review["prediction_labels"][:1]
+    evaluation = H.evaluate_labels(value, {"10": review})
+    key = next(iter(evaluation["metrics"]["by_source_body_document_type_extraction_method_predicate"]))
+    policy = {"version": "holdout-thresholds/1.0", "approved": True,
+              "approved_by": "human", "approved_at": "not-a-timestamp",
+              "minimum_denominators": {"precision": 1, "recall": 1},
+              "by_slice": {key: {"precision": 1.0, "recall": 1.0}}}
+    with pytest.raises(H.HoldoutRefused, match="ISO-8601"):
+        H.evaluate_thresholds(evaluation, policy)
+
+
 def test_prediction_label_set_must_be_complete():
-    value = packet(None)
+    value = H.build_packet([doc(10)], seed="s", max_documents=1, excluded_ids=set(),
+                           development_population_digest="h" * 64, inventory_binding={}, created_at="now")
     review = {"coverage": "complete", "gold_actions": [], "prediction_labels": []}
     with pytest.raises(H.HoldoutRefused, match="prediction labels are not complete"):
         H.evaluate_labels(value, {"10": review})
