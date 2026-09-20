@@ -143,6 +143,18 @@ def _non_result_reason(action: str, row_text: str, start: int, end: int) -> str 
                 r"\s*(?:single-family|multi-?family|resort|ranch|residence)", after
             )
         )
+        or (
+            re.search(
+                r"\b(?:residence|district|commercial|industrial|pcd|pud),\s*$",
+                before,
+            )
+            and re.match(
+                r"\s*(?:intermediate\s+commercial|resort\s+district|"
+                r"single-family|multi-?family|planned\s+community|"
+                r"residential|commercial|industrial)\b",
+                after,
+            )
+        )
     ):
         return "zoning_descriptor"
     if normalized in {"received", "received and filed"} and (

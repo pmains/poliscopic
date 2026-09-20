@@ -187,6 +187,7 @@ def test_high_confidence_non_results_are_rejected(text):
         "(Approved RH/R1-10 PCD) (Ranch or Farm Residence District) to PUD",
         "PCD) (Ranch or Farm Residence,\nApproved Single-Family\nResidence District to PUD",
         "PCD) (Ranch or Farm Residence,\nApproved Multifamily\nResidence District to PUD",
+        "Residence, Approved Intermediate Commercial, Planned",
         "In accordance with a request from the Mayor of the City of Phoenix, received and filed with the City\nClerk on September 15.",
     ],
 )
