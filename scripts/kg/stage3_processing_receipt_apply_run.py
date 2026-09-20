@@ -32,6 +32,8 @@ def _load(path: Path) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--preflight", action="store_true",
+                      help="report non-mutating target bindings before authorization or apply")
     mode.add_argument("--authorize", type=Path, metavar="PACKET",
                       help="new immutable authorized apply packet path")
     mode.add_argument("--apply", type=Path, metavar="PACKET",
@@ -50,6 +52,12 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--offset must be non-negative")
     plan, design = _load(args.plan), _load(args.design)
     backup = _load(args.backup)
+    if args.preflight:
+        print(json.dumps({"engine_target": apply._target(get_engine()),
+                          "plan_target": plan.get("target"),
+                          "design_target": design.get("target"),
+                          "backup_target": backup.get("target")}, sort_keys=True))
+        return 0
     if args.authorize:
         if not all((args.approver, args.writer_role, args.batch_size)):
             parser.error("--authorize requires --approver, --writer-role, and --batch-size")

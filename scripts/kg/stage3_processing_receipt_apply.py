@@ -63,6 +63,11 @@ def _target(engine: Any) -> dict[str, Any]:
             "port": int(url.port or 0)}
 
 
+def _canonical_target(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Compare only the authoritative target identity, never display metadata."""
+    return {field: value.get(field) for field in backup.TARGET_FIELDS}
+
+
 def _source_record(connection: Any, record: Mapping[str, Any]) -> dict[str, Any]:
     row = connection.execute(text("""
         SELECT id, text_content, text_extraction_method, swept_at, document_url,
@@ -158,7 +163,7 @@ def gate(*, engine: Any, plan: Mapping[str, Any], design_packet: Mapping[str, An
     problems += backup.backup_problems(backup_path, target=plan.get("target") or {})
     if authorization_token != AUTHORIZATION_TOKEN:
         problems.append("explicit apply authorization token mismatch")
-    if _target(engine) != dict(plan.get("target") or {}):
+    if _target(engine) != _canonical_target(plan.get("target") or {}):
         problems.append("live engine is not the exact development target")
     if not EXECUTION_ENABLED:
         problems.append("receipt apply execution is disabled")

@@ -38,3 +38,10 @@ def test_cli_cannot_supply_an_alternate_database_target():
 
     assert "--database" not in open(runner.__file__).read()
     assert "get_engine()" in open(runner.__file__).read()
+    assert "--preflight" in open(runner.__file__).read()
+
+
+def test_target_gate_ignores_only_non_identity_display_metadata():
+    target = {**TARGET, "redacted": "development postgresql", "url_class": "development"}
+    assert A._canonical_target(target) == TARGET
+    assert A._canonical_target({**target, "database": "other_dev"}) != TARGET
