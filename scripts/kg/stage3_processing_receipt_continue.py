@@ -32,7 +32,8 @@ class ContinuationRefused(RuntimeError):
 
 
 def _valid_terminal(value: Mapping[str, Any], *, packet: Mapping[str, Any],
-                    plan: Mapping[str, Any], offset: int, selected: int) -> list[str]:
+                    plan: Mapping[str, Any], offset: int, selected: int,
+                    preflight_document: Mapping[str, Any]) -> list[str]:
     problems: list[str] = []
     if value.get("kind") != "kg-stage3-processing-receipt-apply-terminal" or value.get("version") != "1.0":
         problems.append("terminal kind/version is wrong")
@@ -40,6 +41,8 @@ def _valid_terminal(value: Mapping[str, Any], *, packet: Mapping[str, Any],
         problems.append("terminal packet binding differs")
     if value.get("plan_digest") != plan.get("digest"):
         problems.append("terminal plan binding differs")
+    if value.get("preflight_digest") != preflight_document.get("digest"):
+        problems.append("terminal preflight binding differs")
     if value.get("offset") != offset or value.get("selected") != selected:
         problems.append("terminal window differs")
     if value.get("swept_at_updates") != 0:
@@ -53,7 +56,8 @@ def _valid_terminal(value: Mapping[str, Any], *, packet: Mapping[str, Any],
 
 
 def _existing(terminal_dir: Path, *, packet: Mapping[str, Any], plan: Mapping[str, Any],
-              offset: int, selected: int) -> dict[str, Any] | None:
+              offset: int, selected: int,
+              preflight_document: Mapping[str, Any]) -> dict[str, Any] | None:
     matches: list[dict[str, Any]] = []
     for path in terminal_dir.glob("kg-stage3-processing-receipt-apply-*.json"):
         try:
@@ -61,7 +65,8 @@ def _existing(terminal_dir: Path, *, packet: Mapping[str, Any], plan: Mapping[st
         except Exception as exc:  # corrupted local evidence is a hard stop
             raise ContinuationRefused(f"terminal artifact {path.name} cannot be verified: {exc}") from exc
         if document.get("offset") == offset and document.get("authorized_packet_digest") == packet.get("digest"):
-            problems = _valid_terminal(document, packet=packet, plan=plan, offset=offset, selected=selected)
+            problems = _valid_terminal(document, packet=packet, plan=plan, offset=offset,
+                                       selected=selected, preflight_document=preflight_document)
             if problems:
                 raise ContinuationRefused(f"terminal artifact {path.name} is invalid: {problems}")
             matches.append({**document, "terminal_receipt_path": str(path)})
@@ -74,7 +79,20 @@ def _prior_terminal(path: Path, *, prior_packet: Mapping[str, Any], packet: Mapp
                     plan: Mapping[str, Any], selected: int) -> dict[str, Any]:
     """Accept one explicitly named terminal from the immediately prior code packet."""
     terminal = load_verified(path)
-    problems = _valid_terminal(terminal, packet=prior_packet, plan=plan, offset=0, selected=selected)
+    # Prior-packet import is deliberately a compatibility boundary: it validates
+    # the historically authorized terminal under its own contract, then binds the
+    # current packet to the same target/plan/backup before any new preflight work.
+    problems = []
+    if terminal.get("kind") != "kg-stage3-processing-receipt-apply-terminal" or terminal.get("version") != "1.0":
+        problems.append("prior terminal kind/version is wrong")
+    if terminal.get("authorized_packet_digest") != prior_packet.get("digest") or terminal.get("plan_digest") != plan.get("digest"):
+        problems.append("prior terminal bindings differ")
+    if terminal.get("offset") != 0 or terminal.get("selected") != selected:
+        problems.append("prior terminal window differs")
+    if terminal.get("swept_at_updates") != 0:
+        problems.append("prior terminal records swept_at updates")
+    if sum(int(terminal.get(field) or 0) for field in ("success", "failed", "held", "replay")) != selected:
+        problems.append("prior terminal accounting does not reconcile")
     if prior_packet.get("digest") != terminal.get("authorized_packet_digest"):
         problems.append("prior terminal does not bind the supplied prior packet")
     for field in ("target", "plan_digest", "backup_receipt_digest"):
@@ -126,11 +144,13 @@ def _prior_aggregate(path: Path, *, prior_packet: Mapping[str, Any], packet: Map
 
 
 def _aggregate(*, packet: Mapping[str, Any], plan: Mapping[str, Any], windows: list[Mapping[str, Any]],
-               start_offset: int, max_batches: int, stopped: str | None) -> dict[str, Any]:
+               start_offset: int, max_batches: int, stopped: str | None,
+               preflight_document: Mapping[str, Any]) -> dict[str, Any]:
     totals = {field: sum(int(window.get(field) or 0) for window in windows)
               for field in ("selected", "success", "failed", "held", "replay", "swept_at_updates")}
     body = {"kind": KIND, "version": VERSION, "authorized_packet_digest": packet["digest"],
             "plan_digest": plan["digest"], "start_offset": start_offset, "max_batches": max_batches,
+            "preflight_digest": preflight_document["digest"],
             "windows": [{"offset": window["offset"], "digest": window["digest"],
                          "path": window["terminal_receipt_path"], "selected": window["selected"],
                          "success": window["success"], "failed": window["failed"],
@@ -145,9 +165,12 @@ def continue_batches(engine: Any, *, plan: Mapping[str, Any], design_packet: Map
                      terminal_dir: Path, aggregate_out: Path, start_offset: int,
                      max_batches: int, prior_packet: Mapping[str, Any] | None = None,
                      prior_terminal_path: Path | None = None,
-                     prior_aggregate_path: Path | None = None) -> dict[str, Any]:
+                     prior_aggregate_path: Path | None = None,
+                     preflight_document: Mapping[str, Any] | None = None) -> dict[str, Any]:
     if not terminal_dir.is_dir() or max_batches < 1 or start_offset < 0:
         raise ContinuationRefused("existing terminal directory, non-negative offset, and positive max batches are required")
+    if preflight_document is None:
+        raise ContinuationRefused("a current immutable preflight is required")
     if aggregate_out.exists():
         raise ContinuationRefused("aggregate receipt path already exists")
     if start_offset == 0 and (prior_packet is None) != (prior_terminal_path is None):
@@ -173,16 +196,19 @@ def continue_batches(engine: Any, *, plan: Mapping[str, Any], design_packet: Map
     while offset < len(records) and batches_started < max_batches:
         selected = min(int(apply_packet["batch_size"]), len(records) - offset)
         terminal = imported_prior if imported_prior is not None and offset == 0 else _existing(
-            terminal_dir, packet=apply_packet, plan=plan, offset=offset, selected=selected)
+            terminal_dir, packet=apply_packet, plan=plan, offset=offset, selected=selected,
+            preflight_document=preflight_document)
         if terminal is None:
             terminal = apply.apply_batch(engine, plan=plan, design_packet=design_packet,
                                          apply_packet=apply_packet, backup_path=backup_path,
                                          authorization_token=token, offset=offset,
-                                         terminal_dir=terminal_dir)
+                                         terminal_dir=terminal_dir,
+                                         preflight_document=preflight_document)
             terminal = load_verified(terminal["terminal_receipt_path"])
             terminal["terminal_receipt_path"] = str(terminal_dir / f"kg-stage3-processing-receipt-apply-{terminal['digest']}.json")
             problems = _valid_terminal(terminal, packet=apply_packet, plan=plan,
-                                       offset=offset, selected=selected)
+                                       offset=offset, selected=selected,
+                                       preflight_document=preflight_document)
             if problems:
                 raise ContinuationRefused(f"new terminal receipt is invalid: {problems}")
             batches_started += 1
@@ -192,7 +218,8 @@ def continue_batches(engine: Any, *, plan: Mapping[str, Any], design_packet: Map
             break
         offset += selected
     aggregate = _aggregate(packet=apply_packet, plan=plan, windows=windows, start_offset=start_offset,
-                           max_batches=max_batches, stopped=stopped)
+                           max_batches=max_batches, stopped=stopped,
+                           preflight_document=preflight_document)
     write_immutable(aggregate_out, aggregate)
     result = {**aggregate, "aggregate_receipt_path": str(aggregate_out)}
     if stopped:
@@ -206,6 +233,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--design", type=Path, required=True)
     parser.add_argument("--apply", type=Path, required=True)
     parser.add_argument("--backup", type=Path, required=True)
+    parser.add_argument("--preflight", type=Path, required=True)
     parser.add_argument("--authorization-token", required=True)
     parser.add_argument("--terminal-dir", type=Path, required=True)
     parser.add_argument("--aggregate-out", type=Path, required=True)
@@ -225,7 +253,8 @@ def main(argv: list[str] | None = None) -> int:
                               max_batches=args.max_batches,
                               prior_packet=load_verified(args.prior_apply) if args.prior_apply else None,
                               prior_terminal_path=args.prior_terminal,
-                              prior_aggregate_path=args.prior_aggregate)
+                              prior_aggregate_path=args.prior_aggregate,
+                              preflight_document=load_verified(args.preflight))
     print(json.dumps(result, sort_keys=True))
     return 0
 

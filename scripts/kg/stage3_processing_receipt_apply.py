@@ -27,6 +27,7 @@ from scripts.kg import stage3_processing_receipt_store_packet as design
 from scripts.kg import stage3_processing_receipt_store_rows as rows
 from scripts.kg import stage3_processing_receipt_store_schema as schema
 from scripts.kg import stage3_processing_plan_validator as validator
+from scripts.kg import stage3_processing_receipt_preflight as preflight
 from scripts.kg.stage2_artifacts import load_verified, write_immutable
 
 REPO = Path(__file__).resolve().parents[2]
@@ -46,6 +47,7 @@ CODE_FILES = ("scripts/kg/stage3_processing_receipt_apply.py",
               "scripts/kg/stage3_processing_receipt_apply_run.py",
               "scripts/kg/stage3_processing_receipt_continue.py",
               "scripts/kg/stage3_processing_receipt_checkpoint.py",
+              "scripts/kg/stage3_processing_receipt_preflight.py",
               "scripts/entities/sweep_docs_extraction.py")
 
 
@@ -146,9 +148,11 @@ def _live_target_matches(connection: Any, packet: Mapping[str, Any]) -> bool:
 
 
 def _terminal(*, packet: Mapping[str, Any], plan: Mapping[str, Any], offset: int,
-              selected: int, success: int, failed: int, held: int, replay: int) -> dict[str, Any]:
+              selected: int, success: int, failed: int, held: int, replay: int,
+              preflight_document: Mapping[str, Any]) -> dict[str, Any]:
     body = {"kind": "kg-stage3-processing-receipt-apply-terminal", "version": "1.0",
             "authorized_packet_digest": packet["digest"], "plan_digest": plan["digest"],
+            "preflight_digest": preflight_document["digest"],
             "offset": offset, "selected": selected, "success": success, "failed": failed,
             "held": held, "replay": replay, "swept_at_updates": 0,
             "outcome": "replay" if selected == replay else "applied"}
@@ -157,12 +161,13 @@ def _terminal(*, packet: Mapping[str, Any], plan: Mapping[str, Any], offset: int
 
 def gate(*, engine: Any, plan: Mapping[str, Any], design_packet: Mapping[str, Any],
          apply_packet: Mapping[str, Any], backup_path: str | Path | None,
-         authorization_token: str) -> list[str]:
-    problems = validator.validate_plan(plan, target=plan.get("target"), hashes=validator.code_hashes())
-    problems += design.validate_packet(design_packet)
-    problems += authorization.validate(apply_packet, plan=plan, design_packet=design_packet,
-                                       current_code_digest=code_digest())
-    problems += backup.backup_problems(backup_path, target=plan.get("target") or {})
+         authorization_token: str, preflight_document: Mapping[str, Any] | None) -> list[str]:
+    """Fast batch admission; full corpus checks live in a fresh immutable preflight."""
+    if preflight_document is None:
+        return ["a current immutable preflight is required before every apply batch"]
+    problems = preflight.validate(preflight_document, plan=plan, design_packet=design_packet,
+                                  apply_packet=apply_packet, backup_path=Path(str(backup_path)),
+                                  current_code_digest=code_digest())
     if authorization_token != AUTHORIZATION_TOKEN:
         problems.append("explicit apply authorization token mismatch")
     if _target(engine) != _canonical_target(plan.get("target") or {}):
@@ -175,12 +180,14 @@ def gate(*, engine: Any, plan: Mapping[str, Any], design_packet: Mapping[str, An
 def apply_batch(engine: Any, *, plan: Mapping[str, Any], design_packet: Mapping[str, Any],
                 apply_packet: Mapping[str, Any], backup_path: str | Path,
                 authorization_token: str, offset: int = 0,
-                terminal_dir: Path | None = None) -> dict[str, Any]:
+                terminal_dir: Path | None = None,
+                preflight_document: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Execute one exact plan window after every admission check; disabled by default."""
     if terminal_dir is None or not terminal_dir.is_dir():
         raise ApplyRefused("an existing terminal-receipt directory is required before any write")
     problems = gate(engine=engine, plan=plan, design_packet=design_packet, apply_packet=apply_packet,
-                    backup_path=backup_path, authorization_token=authorization_token)
+                    backup_path=backup_path, authorization_token=authorization_token,
+                    preflight_document=preflight_document)
     if problems:
         raise ApplyRefused("; ".join(problems))
     records = list(plan["records"])[offset:offset + apply_packet["batch_size"]]
@@ -199,10 +206,11 @@ def apply_batch(engine: Any, *, plan: Mapping[str, Any], design_packet: Mapping[
             # The schema is additive and is created only once, under the same lock.
             present = connection.execute(text("SELECT to_regclass('processing_receipts')")).scalar_one()
             if present is None:
-                for statement in schema.render_ddl(writer_role=apply_packet["writer_role"]):
-                    connection.execute(text(statement))
-            elif not _schema_is_complete(connection):
+                raise ApplyRefused("receipt store absent after a complete preflight; a new preflight is required")
+            if not _schema_is_complete(connection):
                 raise ApplyRefused("pre-existing receipt store is partial or drifted; restore required")
+            if not preflight.schema_matches(connection, preflight_document or {}):
+                raise ApplyRefused("receipt store schema differs from the immutable preflight")
             for record in records:
                 if record["outcome"] == "held":
                     held += 1
@@ -231,7 +239,8 @@ def apply_batch(engine: Any, *, plan: Mapping[str, Any], design_packet: Mapping[
             transaction.rollback()
             raise
     terminal = _terminal(packet=apply_packet, plan=plan, offset=offset, selected=len(records),
-                         success=success, failed=failed, held=held, replay=replay)
+                         success=success, failed=failed, held=held, replay=replay,
+                         preflight_document=preflight_document or {})
     terminal_path = terminal_dir / f"kg-stage3-processing-receipt-apply-{terminal['digest']}.json"
     write_immutable(terminal_path, terminal)
     terminal["terminal_receipt_path"] = str(terminal_path)
@@ -240,10 +249,12 @@ def apply_batch(engine: Any, *, plan: Mapping[str, Any], design_packet: Mapping[
 
 def compensating_rollback(engine: Any, *, plan: Mapping[str, Any], design_packet: Mapping[str, Any],
                           apply_packet: Mapping[str, Any], backup_path: str | Path,
-                          authorization_token: str, offset: int = 0) -> dict[str, Any]:
+                          authorization_token: str, offset: int = 0,
+                          preflight_document: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Append failure compensation for prior successes; receipt history is never deleted."""
     problems = gate(engine=engine, plan=plan, design_packet=design_packet, apply_packet=apply_packet,
-                    backup_path=backup_path, authorization_token=authorization_token)
+                    backup_path=backup_path, authorization_token=authorization_token,
+                    preflight_document=preflight_document)
     if problems:
         raise ApplyRefused("; ".join(problems))
     records = list(plan["records"])[offset:offset + apply_packet["batch_size"]]

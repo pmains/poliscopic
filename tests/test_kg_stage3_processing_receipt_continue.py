@@ -4,10 +4,13 @@ from _kg_stage3_processing_fixtures import TARGET
 from scripts.kg import stage3_processing_receipt_continue as C
 from scripts.kg.stage2_artifacts import write_immutable
 
+PREFLIGHT = {"digest": "d" * 64}
+
 
 def _terminal(*, offset=0, selected=100):
     body = {"kind": "kg-stage3-processing-receipt-apply-terminal", "version": "1.0",
             "authorized_packet_digest": "a" * 64, "plan_digest": "b" * 64, "offset": offset,
+            "preflight_digest": PREFLIGHT["digest"],
             "selected": selected, "success": selected, "failed": 0, "held": 0, "replay": 0,
             "swept_at_updates": 0, "outcome": "applied"}
     body["digest"] = C.apply.receipt.canonical_sha256(body)
@@ -16,24 +19,27 @@ def _terminal(*, offset=0, selected=100):
 
 def test_terminal_validator_rejects_bad_accounting_and_swept_updates():
     packet, plan = {"digest": "a" * 64}, {"digest": "b" * 64, "target": TARGET}
-    assert C._valid_terminal(_terminal(), packet=packet, plan=plan, offset=0, selected=100) == []
+    assert C._valid_terminal(_terminal(), packet=packet, plan=plan, offset=0, selected=100,
+                             preflight_document=PREFLIGHT) == []
     assert C._valid_terminal({**_terminal(), "swept_at_updates": 1}, packet=packet, plan=plan,
-                             offset=0, selected=100)
+                             offset=0, selected=100, preflight_document=PREFLIGHT)
     assert C._valid_terminal({**_terminal(), "success": 99}, packet=packet, plan=plan,
-                             offset=0, selected=100)
+                             offset=0, selected=100, preflight_document=PREFLIGHT)
 
 
 def test_existing_terminal_is_verified_and_duplicate_offsets_refuse(tmp_path):
     packet, plan = {"digest": "a" * 64}, {"digest": "b" * 64}
     path = tmp_path / f"kg-stage3-processing-receipt-apply-{_terminal()['digest']}.json"
     write_immutable(path, _terminal())
-    assert C._existing(tmp_path, packet=packet, plan=plan, offset=0, selected=100)["offset"] == 0
+    assert C._existing(tmp_path, packet=packet, plan=plan, offset=0, selected=100,
+                       preflight_document=PREFLIGHT)["offset"] == 0
     another = _terminal()
     another["digest"] = "c" * 64
     # Artifact digest is validated before semantic checks; a forged duplicate cannot be skipped.
     (tmp_path / "kg-stage3-processing-receipt-apply-forged.json").write_text("{}")
     try:
-        C._existing(tmp_path, packet=packet, plan=plan, offset=0, selected=100)
+        C._existing(tmp_path, packet=packet, plan=plan, offset=0, selected=100,
+                    preflight_document=PREFLIGHT)
     except C.ContinuationRefused:
         pass
     else:
@@ -99,4 +105,5 @@ def test_continuation_driver_is_serial_batch_only_and_never_sweeps():
     assert "terminal_failure" in source
     assert "prior terminal cannot be imported" in source
     assert "prior aggregate cannot be imported" in source
+    assert "preflight_document" in source
     assert "UPDATE supporting_documents SET swept_at" not in source

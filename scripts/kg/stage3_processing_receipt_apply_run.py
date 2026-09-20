@@ -32,7 +32,7 @@ def _load(path: Path) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--preflight", action="store_true",
+    mode.add_argument("--preflight-report", action="store_true",
                       help="report non-mutating target bindings before authorization or apply")
     mode.add_argument("--authorize", type=Path, metavar="PACKET",
                       help="new immutable authorized apply packet path")
@@ -41,6 +41,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--design", type=Path, required=True)
     parser.add_argument("--backup", type=Path, required=True)
+    parser.add_argument("--preflight", type=Path,
+                        help="fresh immutable full-population preflight required with --apply")
     parser.add_argument("--approver", help="required with --authorize")
     parser.add_argument("--writer-role", help="required with --authorize")
     parser.add_argument("--batch-size", type=int, help="required with --authorize")
@@ -52,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--offset must be non-negative")
     plan, design = _load(args.plan), _load(args.design)
     backup = _load(args.backup)
-    if args.preflight:
+    if args.preflight_report:
         print(json.dumps({"engine_target": apply._target(get_engine()),
                           "plan_target": plan.get("target"),
                           "design_target": design.get("target"),
@@ -72,13 +74,16 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.terminal_dir is None:
         parser.error("--apply requires --terminal-dir")
+    if args.preflight is None:
+        parser.error("--apply requires --preflight")
     if not args.authorization_token:
         parser.error("--apply requires --authorization-token")
     document = _load(args.apply)
     result = apply.apply_batch(get_engine(), plan=plan, design_packet=design,
                                apply_packet=document, backup_path=args.backup,
                                authorization_token=args.authorization_token,
-                               offset=args.offset, terminal_dir=args.terminal_dir)
+                               offset=args.offset, terminal_dir=args.terminal_dir,
+                               preflight_document=_load(args.preflight))
     print(json.dumps(result, sort_keys=True))
     return 0
 
