@@ -76,7 +76,7 @@ def _existing(terminal_dir: Path, *, packet: Mapping[str, Any], plan: Mapping[st
 
 
 def _prior_terminal(path: Path, *, prior_packet: Mapping[str, Any], packet: Mapping[str, Any],
-                    plan: Mapping[str, Any], selected: int) -> dict[str, Any]:
+                    plan: Mapping[str, Any], selected: int, offset: int = 0) -> dict[str, Any]:
     """Accept one explicitly named terminal from the immediately prior code packet."""
     terminal = load_verified(path)
     # Prior-packet import is deliberately a compatibility boundary: it validates
@@ -87,7 +87,7 @@ def _prior_terminal(path: Path, *, prior_packet: Mapping[str, Any], packet: Mapp
         problems.append("prior terminal kind/version is wrong")
     if terminal.get("authorized_packet_digest") != prior_packet.get("digest") or terminal.get("plan_digest") != plan.get("digest"):
         problems.append("prior terminal bindings differ")
-    if terminal.get("offset") != 0 or terminal.get("selected") != selected:
+    if terminal.get("offset") != offset or terminal.get("selected") != selected:
         problems.append("prior terminal window differs")
     if terminal.get("swept_at_updates") != 0:
         problems.append("prior terminal records swept_at updates")

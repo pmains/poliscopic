@@ -4,3 +4,5 @@ def test_checkpoint_is_filesystem_only_and_requires_terminals():
     assert 'get_engine' not in source and 'sqlalchemy' not in source
     assert 'missing terminal at offset' in source
     assert 'write_immutable' in source
+    assert 'bridge packet and terminal must be supplied together' in source
+    assert 'preflight_document=preflight_document' in source
