@@ -19,8 +19,8 @@ from scripts.kg.stage2_artifacts import load_verified
 
 KIND = "kg-stage3-processing-receipt-authorized-apply"
 VERSION = "1.0"
-CURRENT_PLAN_DIGEST = "4dbd4031763e64c2682c1753885cfea4451fc057db0f0049446b89992a688c5e"
-CURRENT_DESIGN_PACKET_DIGEST = "ef48fe945772c1f4a1751811b13a03e589f3de0831cb114ff45426a3dbe8f524"
+CURRENT_PLAN_DIGEST = "73359d2df800b5d8f4e1a399bfc925141e4617e82f0509354470e6f4478eb2f9"
+CURRENT_DESIGN_PACKET_DIGEST = "ae86c35948ca6e214e5699e799897811b2517d285e003c4126c7c6a44fea852c"
 
 
 def digest(value: Mapping[str, Any]) -> str:
