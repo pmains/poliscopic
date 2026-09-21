@@ -377,6 +377,7 @@ def create_app() -> Flask:
     from routes.entity_annotation import annotation_bp
     from routes.entity_viewer import entity_viewer_bp
     from routes.kg_quality_review import kg_quality_review_bp
+    from routes.kg_stage3_approval import kg_stage3_approval_bp
     from routes.podcast import podcast_bp
     app.register_blueprint(meetings_bp)
     app.register_blueprint(bodies_bp)
@@ -389,6 +390,7 @@ def create_app() -> Flask:
     app.register_blueprint(annotation_bp)
     app.register_blueprint(entity_viewer_bp)
     app.register_blueprint(kg_quality_review_bp)
+    app.register_blueprint(kg_stage3_approval_bp)
 
     from routes.newsletter import newsletter_bp
     app.register_blueprint(newsletter_bp)

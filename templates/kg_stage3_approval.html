@@ -1,0 +1,194 @@
+{% extends "base.html" %}
+{% block title %}Stage 3 continuation approval | Poliscopic{% endblock %}
+{% block extra_css %}
+<style>
+  .approval-card { max-width: 940px; margin: auto; }
+  .boundary { border-left: 4px solid #0d6efd; }
+  .plain dt { color: #6c757d; font-weight: 600; }
+  .plain dd { margin-bottom: .65rem; }
+  .wording { white-space: pre-wrap; background: #f8f9fa; border: 1px solid #dee2e6;
+             border-radius: .5rem; padding: 1rem; font-size: .95rem; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+  .sticky-actions { position: sticky; bottom: 0; background: white; border-top: 1px solid #dee2e6;
+                    padding: 1rem 0; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="approval-card">
+
+{% if page == 'confirmed' %}
+  <div class="alert alert-success">
+    <h1 class="h4 alert-heading">Authorization recorded — nothing has executed</h1>
+    <p class="mb-0">Your approval is now an immutable record. Execution still has not occurred, and
+    this page did not start anything.</p>
+  </div>
+  <div class="card mb-4">
+    <div class="card-body">
+      <h2 class="h5">The immutable record</h2>
+      <dl class="plain mb-0">
+        <dt>Record digest</dt><dd class="mono">{{ record.digest }}</dd>
+        <dt>Reviewer</dt><dd>{{ record.reviewer_name }}</dd>
+        <dt>Recorded at</dt><dd>{{ record.approved_at }}</dd>
+        <dt>Bound proposal</dt><dd class="mono">{{ record.proposal_digest }}</dd>
+        <dt>Executed</dt><dd><strong>No</strong> — approving records authorization only.</dd>
+      </dl>
+    </div>
+    <div class="card-footer text-muted small">
+      Saved at <span class="mono">{{ record_path }}</span>. This file is created once and cannot be
+      replaced. A later, separately approved step would generate the authorized packet and the
+      fresh preflight that actually run.
+    </div>
+  </div>
+  <div class="card"><div class="card-body">
+    <h2 class="h5">What you approved, verbatim</h2>
+    <div class="wording">{{ record.approval_text }}</div>
+  </div></div>
+
+{% else %}
+  <div class="d-flex justify-content-between align-items-start mb-3">
+    <div>
+      <h1>Approve the Stage 3 receipt continuation</h1>
+      <p class="text-muted mb-0">Development database only. This page records your authorization;
+      it does not run anything.</p>
+    </div>
+    <span class="badge text-bg-secondary fs-6">NOT APPROVED</span>
+  </div>
+
+  {% if errors %}
+  <div class="alert alert-danger">
+    <strong>Nothing was recorded.</strong>
+    <ul class="mb-0">{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+
+  {% if existing_record %}
+  <div class="alert alert-info">
+    An approval record already exists for this proposal, signed by
+    <strong>{{ existing_record.reviewer_name }}</strong> at {{ existing_record.approved_at }}
+    (digest <span class="mono">{{ existing_record.digest }}</span>).
+    It cannot be replaced. Execution still has not occurred.
+  </div>
+  {% endif %}
+
+  <div class="card boundary mb-4"><div class="card-body">
+    <h2 class="h5">What will change, in plain English</h2>
+    <p class="mb-2">The knowledge graph will record, for each still-unprocessed document, a
+    <strong>processing receipt</strong>: a signed statement that this exact text version was run
+    through the current extractor. Nothing about the documents themselves changes.</p>
+    <p class="mb-0"><strong>{{ counts.writes }} new receipts</strong> would be appended, in
+    <strong>{{ counts.batches }} batches</strong> of at most {{ counts.batch_size }} rows each,
+    starting right after position {{ counts.cursor }} of the plan.</p>
+  </div></div>
+
+  <div class="row g-3 mb-4">
+    <div class="col-md-6"><div class="card h-100"><div class="card-body">
+      <h2 class="h6">Why it is needed</h2>
+      <p class="mb-0" class="text-muted">Today we cannot prove which text has actually been
+      processed. Stage 3 cannot be declared complete until every eligible text version carries this
+      proof, so the receipts are what turn "we think it ran" into something checkable.</p>
+    </div></div></div>
+    <div class="col-md-6"><div class="card h-100"><div class="card-body">
+      <h2 class="h6">What will not change</h2>
+      <ul class="mb-0">
+        <li>No document text, and no <span class="mono">swept_at</span> timestamp.</li>
+        <li>The {{ counts.existing_replay }} receipts already stored: they replay as no-ops.</li>
+        <li>Nothing outside the receipt table, and nothing in production.</li>
+      </ul>
+    </div></div></div>
+  </div>
+
+  <div class="card mb-4"><div class="card-body">
+    <h2 class="h5">If something fails</h2>
+    <p class="mb-2">The run <strong>stops at the first failure</strong> instead of pressing on, so a
+    partial run cannot quietly become a wrong one. Because every receipt is keyed to an exact text
+    version, re-running is safe: work already recorded is recognised and skipped rather than
+    duplicated, which is why the {{ counts.existing_replay }} existing receipts stay exactly as
+    they are.</p>
+    <p class="mb-0"><strong>Held rows are never written.</strong> {{ counts.held_after_cursor }}
+    rows after the cursor are held (not eligible to be written), and the consumed prefix before the
+    cursor contains a further {{ counts.held_in_consumed_prefix }} held rows. Held means held — a
+    held row cannot be turned into a receipt by this run.</p>
+  </div></div>
+
+  <form method="post" action="{{ url_for('kg_stage3_approval.approve') }}">
+    <div class="card mb-4"><div class="card-body">
+      <h2 class="h5">Confirm each point</h2>
+      <p class="text-muted small">Every box must be ticked by you. None is pre-ticked.</p>
+      {% for key, label in checklist %}
+      <div class="form-check mb-2">
+        <input class="form-check-input" type="checkbox" name="ack_{{ key }}" value="yes"
+               id="ack_{{ key }}">
+        <label class="form-check-label" for="ack_{{ key }}">{{ label }}</label>
+      </div>
+      {% endfor %}
+    </div></div>
+
+    <div class="card mb-4"><div class="card-body">
+      <h2 class="h5">Your name</h2>
+      <p class="text-muted small">Recorded verbatim in the immutable approval record. This page does
+      not infer who you are and does not sign for you.</p>
+      <label class="form-label fw-semibold" for="reviewer_name">Reviewer name</label>
+      <input class="form-control" id="reviewer_name" name="reviewer_name" autocomplete="off"
+             value="{{ submitted.reviewer_name if submitted else '' }}" required>
+    </div></div>
+
+    <div class="card mb-4"><div class="card-body">
+      <h2 class="h5">The exact wording you are approving</h2>
+      <div class="wording">{{ wording }}</div>
+      <input type="hidden" name="approval_text" value="{{ wording }}">
+      <div class="form-text mt-2">This wording is bound to proposal
+        <span class="mono">{{ expected.proposal }}</span> and to the exact counts above. If the
+        artifacts change, this page refuses to record an approval rather than signing something
+        different.</div>
+      <label class="form-label mt-3" for="confirm_digest">Type or paste the proposal digest to
+        confirm exactly which proposal you approve</label>
+      <input class="form-control mono" id="confirm_digest" name="confirm_digest" autocomplete="off"
+             placeholder="{{ expected.proposal }}" required>
+    </div></div>
+
+    <div class="alert alert-warning">
+      Approving <strong>records authorization</strong>. It does <strong>not</strong> execute the
+      backfill, and it does not create an apply packet or a preflight. A separate step would be
+      required to actually run anything.
+    </div>
+
+    <div class="sticky-actions d-flex justify-content-between align-items-center">
+      <span class="text-muted small">No option on this page is selected for you.</span>
+      <button class="btn btn-primary" type="submit">Record authorization</button>
+    </div>
+  </form>
+
+  <details class="mt-4 mb-5">
+    <summary class="text-muted">Technical details: every binding behind this approval</summary>
+    <div class="card mt-3"><div class="card-body">
+      <dl class="plain mb-0">
+        <dt>Proposal digest</dt><dd class="mono">{{ expected.proposal }}</dd>
+        <dt>Proposal kind / state</dt><dd class="mono">{{ operation.proposal.kind }} · {{ operation.proposal.state }} (enabled {{ operation.proposal.enabled }}, executable {{ operation.proposal.executable }})</dd>
+        <dt>Plan digest</dt><dd class="mono">{{ expected.plan }}</dd>
+        <dt>Design packet digest</dt><dd class="mono">{{ expected.design_packet }}</dd>
+        <dt>Receipt set digest</dt><dd class="mono">{{ expected.receipt_set }} ({{ operation.receipt_set.count }} receipts)</dd>
+        <dt>Verified backup receipt</dt><dd class="mono">{{ expected.backup_receipt }}</dd>
+        <dt>Batch schedule digest</dt><dd class="mono">{{ expected.schedule }}</dd>
+        <dt>Code digest</dt><dd class="mono">{{ operation.code_digest }}</dd>
+        <dt>Target</dt><dd class="mono">{{ operation.target }}</dd>
+        <dt>Cursor</dt><dd class="mono">{{ counts.cursor }}</dd>
+        <dt>Counts</dt><dd class="mono">{{ counts.writes }} writes · {{ counts.batches }} batches · {{ counts.batch_size }} rows/batch · {{ counts.held_after_cursor }} held after cursor · {{ counts.existing_replay }} existing replay · {{ counts.held_in_consumed_prefix }} held in consumed prefix</dd>
+        <dt>Artifact paths</dt>
+        <dd class="mono">
+          proposal: data/kg-plans/kg-stage3-processing-receipt-proposal-20260921T195816Z.json<br>
+          plan: data/kg-plans/kg-stage3-processing-dry-plan-20260921T193158Z.json<br>
+          design: data/kg-plans/kg-stage3-processing-receipt-store-packet-20260921T194940Z.json<br>
+          receipt set: data/kg-plans/kg-stage3-processing-receipt-set-20260921T192601Z.json<br>
+          backup: data/backups/kg-stage2-backup-receipt-20260921T184835Z.json<br>
+          schedule: data/kg-plans/kg-stage3-receipt-batch-schedule-20260921T195036Z.json<br>
+          approval ledger: data/kg-approvals/
+        </dd>
+      </dl>
+      <p class="text-muted small mb-0">Correcting a mistake: this record is create-once. A second
+      submission is refused, so a change of decision requires a new proposal and a new review
+      rather than an edit of the record.</p>
+    </div></div>
+  </details>
+{% endif %}
+</div>
+{% endblock %}
