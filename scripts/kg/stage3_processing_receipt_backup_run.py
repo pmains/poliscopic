@@ -34,12 +34,41 @@ from scripts.kg.stage3_processing_receipt_store_backup import file_sha256  # noq
 PG = Path("/opt/homebrew/opt/postgresql@18/bin")
 
 
+def _failure_detail(completed: subprocess.CompletedProcess, command: list[str]) -> str:
+    """Describe a failed command without dereferencing an uncaptured stream.
+
+    ``capture=False`` leaves ``stdout``/``stderr`` set to ``None``.  Reporting the
+    failure must never mask the original command and exit status by touching them
+    blindly; the exit status is always reported, output only when it was captured.
+    """
+    detail = (completed.stderr or completed.stdout or "").strip()
+    if detail:
+        return f"{Path(command[0]).name} failed ({completed.returncode}): {detail}"
+    return f"{Path(command[0]).name} failed with exit status {completed.returncode}"
+
+
 def _run(command: list[str], *, env: dict[str, str] | None = None,
          capture: bool = True) -> subprocess.CompletedProcess:
     completed = subprocess.run(command, text=True, capture_output=capture, env=env)
     if completed.returncode:
-        raise RuntimeError(f"{Path(command[0]).name} failed: {completed.stderr.strip()}")
+        raise RuntimeError(_failure_detail(completed, command))
     return completed
+
+
+def _cluster_env() -> dict[str, str]:
+    """Environment for temporary-cluster commands.
+
+    PostgreSQL 18 refuses a postmaster that becomes multithreaded during startup,
+    which is what macOS locale initialization does when no locale is resolvable.
+    Naming the C locale explicitly keeps the start single-threaded and therefore
+    independent of whatever environment launched this script.
+    """
+    return {**os.environ, "LC_ALL": "C", "LANG": "C"}
+
+
+def _cluster_run(command: list[str], *, capture: bool = True) -> subprocess.CompletedProcess:
+    """Run one temporary-cluster command under that explicit locale."""
+    return _run(command, env=_cluster_env(), capture=capture)
 
 
 def _free_port() -> int:
@@ -90,16 +119,17 @@ def main(argv: list[str] | None = None) -> int:
     stopped = False
     with tempfile.TemporaryDirectory(prefix="poliscopic-receipt-backup-") as temporary:
         cluster = Path(temporary) / "cluster"
-        _run([str(PG / "initdb"), "-A", "trust", "-U", "poliscopic", "-D", str(cluster),
-              "--encoding=UTF8", "--locale=C"])
-        _run([str(PG / "pg_ctl"), "-D", str(cluster), "-l", str(Path(temporary) / "postgres.log"),
-              "-o", f"-h 127.0.0.1 -p {port}", "-w", "start"], capture=False)
+        _cluster_run([str(PG / "initdb"), "-A", "trust", "-U", "poliscopic", "-D", str(cluster),
+                      "--encoding=UTF8", "--locale=C"])
+        _cluster_run([str(PG / "pg_ctl"), "-D", str(cluster),
+                      "-l", str(Path(temporary) / "postgres.log"),
+                      "-o", f"-h 127.0.0.1 -p {port}", "-w", "start"], capture=False)
         try:
             scratch_name = "poliscopic_receipt_restore_verify"
-            _run([str(PG / "createdb"), "-h", "127.0.0.1", "-p", str(port), "-U", "poliscopic",
-                  scratch_name])
-            _run([str(PG / "pg_restore"), "--no-owner", "--no-privileges", "-h", "127.0.0.1",
-                  "-p", str(port), "-U", "poliscopic", "-d", scratch_name, str(dump_path)])
+            _cluster_run([str(PG / "createdb"), "-h", "127.0.0.1", "-p", str(port),
+                          "-U", "poliscopic", scratch_name])
+            _cluster_run([str(PG / "pg_restore"), "--no-owner", "--no-privileges", "-h", "127.0.0.1",
+                          "-p", str(port), "-U", "poliscopic", "-d", scratch_name, str(dump_path)])
             restored = create_engine(URL.create(source.url.drivername, username="poliscopic",
                 host="127.0.0.1", port=port, database=scratch_name), future=True)
             try:
@@ -113,7 +143,8 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 restored.dispose()
         finally:
-            _run([str(PG / "pg_ctl"), "-D", str(cluster), "-m", "fast", "-w", "stop"], capture=False)
+            _cluster_run([str(PG / "pg_ctl"), "-D", str(cluster), "-m", "fast", "-w", "stop"],
+                         capture=False)
             stopped = True
     receipt = verify.build_receipt(baseline=baseline, baseline_path=str(baseline_path.resolve()),
         dump_path=str(dump_path), dump_sha256=dump_sha, dump_started_at=dump_started_at,
