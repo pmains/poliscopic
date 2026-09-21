@@ -31,6 +31,7 @@ for _candidate in (str(REPO), str(REPO / "scripts")):
 from db.core import get_engine  # noqa: E402
 from scripts.kg import stage2_artifacts as artifacts  # noqa: E402
 from scripts.kg import stage2_backup_verify as verify  # noqa: E402
+from scripts.kg import stage3_processing_receipt_store_schema as receipt_schema  # noqa: E402
 from scripts.kg.stage3_processing_receipt_store_backup import file_sha256  # noqa: E402
 
 PG = Path("/opt/homebrew/opt/postgresql@18/bin")
@@ -172,8 +173,25 @@ def _restore_section(port: int, scratch_name: str, dump_path: Path, section: str
                   "-U", "poliscopic", "-d", scratch_name, str(dump_path)])
 
 
+def _schema_correction_statements() -> tuple[str, str]:
+    """Exact source-schema correction, reusable for scratch proof and migration."""
+    pairs = (
+        (receipt_schema.CANONICAL_JSON_DDL, receipt_schema.CANONICAL_JSON_FUNCTION),
+        (receipt_schema.CANONICAL_DIGEST_DDL, receipt_schema.CANONICAL_DIGEST_FUNCTION),
+    )
+    return tuple(ddl.replace(
+        f"CREATE FUNCTION {name}", f"CREATE OR REPLACE FUNCTION public.{name}", 1)
+        for ddl, name in pairs)
+
+
+def _apply_schema_correction(connection: Any) -> None:
+    """Replace only the two defective functions in the current transaction."""
+    for statement in _schema_correction_statements():
+        connection.execute(text(statement))
+
+
 def _restore_and_compare(source: Any, *, port: int, scratch_name: str, dump_path: Path,
-                         baseline: Mapping[str, Any]) -> None:
+                         baseline: Mapping[str, Any], prove_schema_correction: bool = False) -> None:
     """Restore sectionally, prove the receipt functions resolve, then compare exactly.
 
     The data section loads only after the catalog confirms that every function the
@@ -188,6 +206,9 @@ def _restore_and_compare(source: Any, *, port: int, scratch_name: str, dump_path
         declared = _dump_function_signatures(dump_path)
         with restored.connect() as connection:
             problems = _missing_generated_functions(connection, declared=declared)
+            if not problems and prove_schema_correction:
+                _apply_schema_correction(connection)
+                connection.commit()
         if problems:
             raise RuntimeError(f"scratch schema cannot restore {RECEIPT_TABLE}: {problems}")
         _restore_section(port, scratch_name, dump_path, "data")

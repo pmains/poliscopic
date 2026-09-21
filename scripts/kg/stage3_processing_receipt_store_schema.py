@@ -323,20 +323,20 @@ CANONICAL_JSON_DDL = f"""CREATE FUNCTION {CANONICAL_JSON_FUNCTION}(value jsonb)
 RETURNS text LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS $$
     SELECT CASE jsonb_typeof(value)
       WHEN 'object' THEN '{{' || coalesce((
-        SELECT string_agg({JSON_STRING_FUNCTION}(key) || ':' ||
-                          {CANONICAL_JSON_FUNCTION}(item), ',' ORDER BY key COLLATE "C")
+        SELECT string_agg(public.{JSON_STRING_FUNCTION}(key) || ':' ||
+                          public.{CANONICAL_JSON_FUNCTION}(item), ',' ORDER BY key COLLATE "C")
         FROM jsonb_each(value) AS entry(key, item)), '') || '}}'
       WHEN 'array' THEN '[' || coalesce((
-        SELECT string_agg({CANONICAL_JSON_FUNCTION}(item), ',' ORDER BY ordinal)
+        SELECT string_agg(public.{CANONICAL_JSON_FUNCTION}(item), ',' ORDER BY ordinal)
         FROM jsonb_array_elements(value) WITH ORDINALITY AS entry(item, ordinal)), '') || ']'
-      WHEN 'string' THEN {JSON_STRING_FUNCTION}(value #>> '{{}}')
+      WHEN 'string' THEN public.{JSON_STRING_FUNCTION}(value #>> '{{}}')
       ELSE value::text
     END
 $$"""
 
 CANONICAL_DIGEST_DDL = f"""CREATE FUNCTION {CANONICAL_DIGEST_FUNCTION}(value jsonb)
 RETURNS char(64) LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS $$
-    SELECT encode(public.digest(convert_to({CANONICAL_JSON_FUNCTION}(value - 'digest'),
+    SELECT encode(public.digest(convert_to(public.{CANONICAL_JSON_FUNCTION}(value - 'digest'),
                                             'UTF8'), 'sha256'), 'hex')::char(64)
 $$"""
 

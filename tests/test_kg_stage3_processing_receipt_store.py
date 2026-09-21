@@ -67,6 +67,20 @@ def test_canonical_json_uses_a_postgresql_codepoint_primitive_that_exists():
         assert fragment in S.JSON_STRING_DDL
 
 
+def test_stored_function_dependencies_are_schema_qualified():
+    """Receipt functions must execute when pg_restore clears search_path."""
+    canonical = S.CANONICAL_JSON_DDL
+    assert f"public.{S.JSON_STRING_FUNCTION}(" in canonical
+    assert f"public.{S.CANONICAL_JSON_FUNCTION}(" in canonical
+    assert f"public.{S.CANONICAL_JSON_FUNCTION}(" in S.CANONICAL_DIGEST_DDL
+    for ddl in (canonical, S.CANONICAL_DIGEST_DDL):
+        body = ddl.split(" AS $$", 1)[1]
+        unqualified = body.replace(f"public.{S.JSON_STRING_FUNCTION}", "")
+        unqualified = unqualified.replace(f"public.{S.CANONICAL_JSON_FUNCTION}", "")
+        assert f"{S.JSON_STRING_FUNCTION}(" not in unqualified
+        assert f"{S.CANONICAL_JSON_FUNCTION}(" not in unqualified
+
+
 def test_generated_recorded_at_does_not_use_a_nonimmutable_text_timestamptz_cast():
     """PostgreSQL generated expressions must be immutable at CREATE TABLE time."""
     declaration = dict((name, sql) for name, sql, _source in S.COLUMNS)["recorded_at"]

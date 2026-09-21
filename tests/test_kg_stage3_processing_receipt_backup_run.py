@@ -105,6 +105,17 @@ def test_source_no_longer_dereferences_an_uncaptured_stream():
 # Defect 3: sectional restore with a fail-closed generated-column guard
 # --------------------------------------------------------------------------- #
 
+
+def test_schema_correction_is_narrow_and_schema_qualified():
+    statements = backup_run._schema_correction_statements()
+    assert len(statements) == 2
+    assert all(statement.startswith("CREATE OR REPLACE FUNCTION public.")
+               for statement in statements)
+    assert all("DROP " not in statement.upper() for statement in statements)
+    joined = " ".join(statements)
+    assert "public.processing_receipts_canonical_json(" in joined
+    assert "public.processing_receipts_json_string(" in joined
+
 DIGEST_FUNCTION = "processing_receipts_canonical_receipt_digest"
 HELPER_FUNCTION = "processing_receipts_canonical_json"
 GENERATED_EXPRESSION = "processing_receipts_canonical_receipt_digest(receipt_body)"
