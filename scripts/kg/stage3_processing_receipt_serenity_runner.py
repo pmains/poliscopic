@@ -33,6 +33,7 @@ for _candidate in (str(REPO), str(REPO / "scripts")):
 
 from db.core import get_engine  # noqa: E402
 from scripts.kg import stage3_processing_receipt_apply as apply  # noqa: E402
+from scripts.kg import stage3_processing_receipt_apply_packet as authorization  # noqa: E402
 from scripts.kg import stage3_processing_receipt_continue as continuation  # noqa: E402
 from scripts.kg import stage3_processing_receipt_preflight as preflight  # noqa: E402
 from scripts.kg.stage2_artifacts import load_verified, write_immutable  # noqa: E402
@@ -361,6 +362,9 @@ def run(engine: Any, *, plan: Mapping[str, Any], design: Mapping[str, Any], pack
         seed_paths: Sequence[Path], renewal_seconds: int, report_out: Path,
         notify_thread_id: str | None = None) -> dict[str, Any]:
     """Run independent batches to completion or the first refusal/failure."""
+    refusals = authorization.proposal_problems(packet)
+    if refusals:
+        raise SerenityRefused("; ".join(refusals))
     directories = (terminal_dir, preflight_dir, checkpoint_dir, report_out.parent)
     if any(not path.is_dir() for path in directories):
         raise SerenityRefused("terminal, preflight, checkpoint, and report directories must already exist")

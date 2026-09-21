@@ -21,6 +21,7 @@ for _candidate in (str(REPO), str(REPO / "scripts")):
 
 from db.core import get_engine  # noqa: E402
 from scripts.kg import stage3_processing_receipt_apply as apply  # noqa: E402
+from scripts.kg import stage3_processing_receipt_apply_packet as authorization  # noqa: E402
 from scripts.kg.stage2_artifacts import load_verified, write_immutable  # noqa: E402
 
 KIND = "kg-stage3-processing-receipt-continuation"
@@ -167,6 +168,9 @@ def continue_batches(engine: Any, *, plan: Mapping[str, Any], design_packet: Map
                      prior_terminal_path: Path | None = None,
                      prior_aggregate_path: Path | None = None,
                      preflight_document: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    refusals = authorization.proposal_problems(apply_packet)
+    if refusals:
+        raise ContinuationRefused("; ".join(refusals))
     if not terminal_dir.is_dir() or max_batches < 1 or start_offset < 0:
         raise ContinuationRefused("existing terminal directory, non-negative offset, and positive max batches are required")
     if preflight_document is None:

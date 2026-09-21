@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
-"""Propose a non-applying continuation packet and a deterministic batch schedule.
+"""Propose a non-executable continuation and verify the batch schedule is unchanged.
 
-Preparation only.  This builds the authorization-shaped artifact for the refreshed
-receipt-bound plan, a deterministic batch schedule from the proven continuation
-cursor, and writes both immutably.  It executes nothing: the design packet stays
-disabled, the store's ``ENABLED`` stays false, and no database connection is opened.
+Preparation only.  This builds a **proposal** - a distinct contract with its own kind,
+its own `proposed` state, `enabled: false`, `executable: false`, and no approver field -
+so it can never be mistaken for, or upgraded into, an authorization.  It is deliberately
+not built through the authorization builder, and it carries no approver because none has
+been supplied.
 
-The proposal deliberately does **not** invent an approver.  The contract requires the
-field to be non-empty and asserts an authorized state, so the value here states its own
-status instead of recording an approval nobody has given.  The artifact is also written
-beside the plans rather than into the runner's terminal directory, whose
-``kg-stage3-processing-receipt-apply-*.json`` glob would otherwise adopt it as a terminal
-receipt.
+The batch schedule is *verified*, not rewritten: it is a pure function of the plan, the
+proven cursor, and the batch size, none of which this correction changes, so its artifact
+must stay byte-identical.
 """
 
 from __future__ import annotations
@@ -31,14 +29,16 @@ for _candidate in (str(REPO), str(REPO / "scripts")):  # pragma: no cover
 
 from scripts.kg import stage3_processing_receipt_apply as apply  # noqa: E402
 from scripts.kg import stage3_processing_receipt_apply_packet as authorization  # noqa: E402
+from scripts.kg import stage3_processing_receipt_apply_proposal as proposal  # noqa: E402
 from scripts.kg.stage2_artifacts import load_verified, write_immutable  # noqa: E402
 
 DEFAULT_PLAN = REPO / "data/kg-plans/kg-stage3-processing-dry-plan-20260921T193158Z.json"
 DEFAULT_DESIGN = REPO / "data/kg-plans/kg-stage3-processing-receipt-store-packet-20260921T194940Z.json"
 DEFAULT_BACKUP = REPO / "data/backups/kg-stage2-backup-receipt-20260921T184835Z.json"
+DEFAULT_SCHEDULE = REPO / "data/kg-plans/kg-stage3-receipt-batch-schedule-20260921T195036Z.json"
 BATCH_SIZE = 500
 CURSOR = 6100
-PROPOSAL_APPROVER = "PENDING MANAGER REVIEW (NOT AN AUTHORIZATION)"
+WRITER_ROLE = "poliscopic"
 CHECKPOINT_DIR = "data/kg-receipts"
 TERMINAL_DIR = "data/kg-receipts"
 PREFLIGHT_DIR = "data/kg-plans"
@@ -99,6 +99,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--plan", type=Path, default=DEFAULT_PLAN)
     parser.add_argument("--design", type=Path, default=DEFAULT_DESIGN)
     parser.add_argument("--backup", type=Path, default=DEFAULT_BACKUP)
+    parser.add_argument("--schedule", type=Path, default=DEFAULT_SCHEDULE)
     parser.add_argument("--out-dir", type=Path, default=REPO / "data" / "kg-plans")
     parser.add_argument("--stamp", default=None)
     args = parser.parse_args(argv)
@@ -109,39 +110,45 @@ def main(argv: Sequence[str] | None = None) -> int:
     backup = load_verified(args.backup)
     code = apply.code_digest()
 
-    packet = authorization.build(
+    record = proposal.build(
         plan=plan, design_packet=design, backup_receipt_path=str(args.backup.resolve()),
         backup_receipt_digest=str(backup["digest"]), code_digest=code,
-        approver=PROPOSAL_APPROVER, writer_role="poliscopic", batch_size=BATCH_SIZE)
-    problems = authorization.validate(packet, plan=plan, design_packet=design,
-                                      current_code_digest=code)
-    if problems:
-        print(json.dumps({"outcome": "refused", "problems": problems[:5]}, sort_keys=True))
+        writer_role=WRITER_ROLE, batch_size=BATCH_SIZE)
+    problems = proposal.validate_proposal(record, plan=plan, design_packet=design,
+                                          current_code_digest=code)
+    # Self-check: the authorization contract must refuse this by content alone.
+    refused = authorization.proposal_problems(record)
+    validated_as_authorization = authorization.validate(
+        record, plan=plan, design_packet=design, current_code_digest=code)
+    if problems or not refused or not validated_as_authorization:
+        print(json.dumps({"outcome": "refused",
+                          "problems": (problems or refused or
+                                       ["the proposal was accepted as an authorization"])[:5]},
+                         sort_keys=True))
         return 1
-    packet_path = args.out_dir / f"kg-stage3-processing-receipt-proposal-{stamp}.json"
-    packet_digest = write_immutable(packet_path, packet)
+    record_path = args.out_dir / f"kg-stage3-processing-receipt-proposal-{stamp}.json"
+    record_digest = write_immutable(record_path, record)
 
-    schedule = build_schedule(plan, cursor=CURSOR, batch_size=BATCH_SIZE)
-    schedule_path = args.out_dir / f"kg-stage3-receipt-batch-schedule-{stamp}.json"
-    schedule_digest = write_immutable(schedule_path, schedule)
+    stored = load_verified(args.schedule)
+    rebuilt = build_schedule(plan, cursor=stored.get("cursor"), batch_size=stored["batch_size"])
+    unchanged = {key: value for key, value in stored.items() if key != "digest"} == rebuilt
 
     print(json.dumps({
         "outcome": "proposed", "nothing_executed": True,
-        "proposal": {"path": str(packet_path), "digest": packet_digest,
-                     "plan_digest": packet["plan_digest"],
-                     "design_packet_digest": packet["design_packet_digest"],
-                     "backup_receipt_digest": packet["backup_receipt_digest"],
-                     "code_digest": packet["code_digest"],
-                     "approver_status": PROPOSAL_APPROVER,
-                     "batch_size": packet["batch_size"]},
-        "schedule": {"path": str(schedule_path), "digest": schedule_digest,
-                     "cursor": schedule["cursor"], "batches": len(schedule["batches"]),
-                     "totals": schedule["totals"]},
-        "store_enabled": False,
-        "design_packet_enabled": design.get("enabled"),
-        "apply_execution_enabled": apply.EXECUTION_ENABLED,
-        "executed": False},
-        indent=2, sort_keys=True))
+        "proposal": {"path": str(record_path), "digest": record_digest,
+                     "kind": record["kind"], "state": record["state"],
+                     "enabled": record["enabled"], "executable": record["executable"],
+                     "approver_present": "approver" in record,
+                     "plan_digest": record["plan_digest"],
+                     "design_packet_digest": record["design_packet_digest"],
+                     "backup_receipt_digest": record["backup_receipt_digest"],
+                     "code_digest": record["code_digest"], "batch_size": record["batch_size"]},
+        "refused_as_authorization": refused,
+        "schedule": {"path": str(args.schedule), "digest": stored.get("digest"),
+                     "unchanged": unchanged,
+                     "batches": len(stored["batches"]), "cursor": stored.get("cursor")},
+        "executed": False,
+    }, indent=2, sort_keys=True))
     return 0
 
 

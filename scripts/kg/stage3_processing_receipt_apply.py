@@ -166,6 +166,9 @@ def gate(*, engine: Any, plan: Mapping[str, Any], design_packet: Mapping[str, An
          apply_packet: Mapping[str, Any], backup_path: str | Path | None,
          authorization_token: str, preflight_document: Mapping[str, Any] | None) -> list[str]:
     """Fast batch admission; full corpus checks live in a fresh immutable preflight."""
+    refusals = authorization.proposal_problems(apply_packet)
+    if refusals:
+        return refusals
     if preflight_document is None:
         return ["a current immutable preflight is required before every apply batch"]
     problems = preflight.validate(preflight_document, plan=plan, design_packet=design_packet,

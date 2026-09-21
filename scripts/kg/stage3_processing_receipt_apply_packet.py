@@ -21,6 +21,42 @@ KIND = "kg-stage3-processing-receipt-authorized-apply"
 VERSION = "1.0"
 CURRENT_PLAN_DIGEST = "73359d2df800b5d8f4e1a399bfc925141e4617e82f0509354470e6f4478eb2f9"
 CURRENT_DESIGN_PACKET_DIGEST = "ae86c35948ca6e214e5699e799897811b2517d285e003c4126c7c6a44fea852c"
+#: A proposal is a different contract, not a weaker authorization.  These markers let
+#: every apply-facing gate refuse one categorically - by content, never by filename,
+#: directory, or prose in the artifact.
+PROPOSAL_KIND = "kg-stage3-processing-receipt-apply-proposal"
+PROPOSAL_STATE = "proposed"
+PROPOSAL_APPROVER_PLACEHOLDER = "PENDING MANAGER REVIEW (NOT AN AUTHORIZATION)"
+
+
+def _normalised(value: Any) -> str:
+    return " ".join(str(value or "").split()).upper()
+
+
+def proposal_problems(packet: Any) -> list[str]:
+    """Refuse a proposal, or a placeholder approver, in any apply-facing gate.
+
+    An artifact that merely *says* it is not an authorization is not safe: the check
+    must be on the artifact's own declared contract, so a proposal copied to an
+    apply-style filename in an apply-style directory is still refused.
+    """
+    if not isinstance(packet, Mapping):
+        return ["apply packet must be an object"]
+    problems: list[str] = []
+    if packet.get("kind") == PROPOSAL_KIND:
+        problems.append("a proposal is not an authorization: proposal kind")
+    if str(packet.get("state") or "") == PROPOSAL_STATE:
+        problems.append("a proposal is not an authorization: state is proposed")
+    approver = _normalised(packet.get("approver"))
+    if approver == _normalised(PROPOSAL_APPROVER_PLACEHOLDER):
+        problems.append("a placeholder approver is not an authorization")
+    elif approver.startswith("PENDING MANAGER REVIEW"):
+        problems.append("a pending-review approver is not an authorization")
+    if packet.get("authorization_required") is True:
+        problems.append("an artifact declaring authorization_required is not authorized")
+    if packet.get("proposed") is True or packet.get("executable") is False:
+        problems.append("an artifact declaring itself non-executable is not an authorization")
+    return problems
 
 
 def digest(value: Mapping[str, Any]) -> str:
@@ -55,6 +91,7 @@ def validate(packet: Any, *, plan: Mapping[str, Any], design_packet: Mapping[str
         return ["authorized apply packet must be an object"]
     body = {key: value for key, value in packet.items() if key != "digest"}
     problems: list[str] = []
+    problems.extend(proposal_problems(packet))
     if packet.get("kind") != KIND or packet.get("version") != VERSION:
         problems.append("authorized apply packet kind or version is wrong")
     if packet.get("state") != "authorized" or packet.get("enabled") is not True:
