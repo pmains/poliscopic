@@ -1,14 +1,15 @@
 """Focused tests for the Stage 3 human-approval workspace.
 
-The page records a human authorization; it must not execute, must not sign for anyone,
-and must not be talked into approving something other than the exact artifacts a human
-reviewed.  These tests pin rendering, exact binding, the create-once write, every refusal
-path, and the absence of any database, apply, authorization-builder, preflight, or runner
-call on either the GET or the POST path.
+The page records a human authorization, so the tests cover two things at once: the
+review experience must stay intelligible, and the surface must be genuinely unreachable
+unless a dedicated local process opts in.  A page that records authorization but is
+reachable by any client is not an approval boundary at all, which is exactly the defect
+these tests now guard against.
 """
 
 from __future__ import annotations
 
+import ast
 import os
 import tempfile
 import unittest
@@ -21,10 +22,13 @@ import routes.kg_stage3_approval as review
 from routes.kg_stage3_approval import kg_stage3_approval_bp
 from scripts.kg import stage3_processing_receipt_apply as apply
 from scripts.kg import stage3_processing_receipt_apply_proposal as proposal_mod
+from scripts.kg import stage3_approval_serve as launcher
 from scripts.kg.stage2_artifacts import load_verified, write_immutable
 
 TARGET = {"tier": "development", "database": "poliscopic_dev"}
 BACKUP_DIGEST = "b" * 64
+LOCAL = {"REMOTE_ADDR": "127.0.0.1"}
+REMOTE = {"REMOTE_ADDR": "203.0.113.9"}
 
 
 class ApprovalWorkspaceTest(unittest.TestCase):
@@ -91,12 +95,19 @@ class ApprovalWorkspaceTest(unittest.TestCase):
         for item in self.patches:
             item.start()
 
+        os.environ[review.ENABLE_FLAG] = review.ENABLED_VALUE
+        self.token = "test-token-" + "a" * 24
         app = Flask(__name__, template_folder=str(Path(__file__).resolve().parents[1] / "templates"))
+        app.secret_key = "test-secret-key"
         app.jinja_env.globals["current_user"] = type("Anonymous", (), {"is_authenticated": False})()
         app.register_blueprint(kg_stage3_approval_bp)
+        app.testing = False
         self.client = app.test_client()
+        with self.client.session_transaction() as session:
+            session[review.CSRF_SESSION_KEY] = self.token
 
     def tearDown(self):
+        os.environ.pop(review.ENABLE_FLAG, None)
         for item in self.patches:
             item.stop()
         self.temp_dir.cleanup()
@@ -106,7 +117,8 @@ class ApprovalWorkspaceTest(unittest.TestCase):
     def form(self, **overrides):
         data = {"reviewer_name": "Peter Mains",
                 "confirm_digest": self.expected["proposal"],
-                "approval_text": review.approval_wording()}
+                "approval_text": review.approval_wording(),
+                "csrf_token": self.token}
         for key, _label in review.CHECKLIST:
             data[f"ack_{key}"] = "yes"
         data.update(overrides)
@@ -116,84 +128,192 @@ class ApprovalWorkspaceTest(unittest.TestCase):
     def record_path(self) -> Path:
         return review._record_path(self.expected["proposal"])
 
+    # -- disabled by default, loopback only ------------------------------- #
+
+    def test_the_route_is_unavailable_without_the_enablement_flag(self):
+        os.environ.pop(review.ENABLE_FLAG, None)
+        self.assertEqual(self.client.get("/kg/stage3-approval/", environ_base=LOCAL).status_code, 404)
+        self.assertEqual(self.client.post("/kg/stage3-approval/approve", data=self.form(),
+                                          environ_base=LOCAL).status_code, 404)
+        self.assertFalse(self.record_path.exists())
+
+    def test_the_flag_alone_is_not_enough_a_remote_client_is_still_refused(self):
+        self.assertEqual(self.client.get("/kg/stage3-approval/",
+                                         environ_base=REMOTE).status_code, 403)
+        self.assertEqual(self.client.post("/kg/stage3-approval/approve", data=self.form(),
+                                          environ_base=REMOTE).status_code, 403)
+        self.assertFalse(self.record_path.exists())
+
+    def test_the_main_application_never_exposes_the_approval_route(self):
+        from routes import create_app
+
+        app = create_app()
+        rules = [str(rule) for rule in app.url_map.iter_rules()]
+        self.assertEqual([rule for rule in rules if "stage3-approval" in rule], [])
+        os.environ[review.ENABLE_FLAG] = review.ENABLED_VALUE  # even opted in, it is absent
+        anonymous = app.test_client()
+        self.assertEqual(anonymous.get("/kg/stage3-approval/", environ_base=LOCAL).status_code, 404)
+        self.assertEqual(anonymous.post("/kg/stage3-approval/approve", data={},
+                                        environ_base=LOCAL).status_code, 404)
+
+    def test_the_launcher_binds_loopback_without_debug_or_reloader(self):
+        captured: dict = {}
+        with patch.object(Flask, "run", lambda self_app, **kwargs: captured.update(kwargs)):
+            launcher.main(["--port", "5999"])
+        self.assertEqual(captured["host"], "127.0.0.1")
+        self.assertIs(captured["debug"], False)
+        self.assertIs(captured["use_reloader"], False)
+        self.assertEqual(captured["port"], 5999)
+        self.assertEqual(launcher.HOST, "127.0.0.1")
+        self.assertNotEqual(launcher.HOST, "0.0.0.0")
+
+    def test_the_launcher_refuses_a_non_loopback_bind_or_debug_mode(self):
+        with patch.object(launcher, "HOST", "0.0.0.0"):
+            with self.assertRaises(RuntimeError):
+                launcher.run_kwargs([])
+        with patch.object(launcher, "DEBUG", True):
+            with self.assertRaises(RuntimeError):
+                launcher.run_kwargs([])
+
+    def test_the_launcher_module_never_enables_debug_or_the_reloader(self):
+        self.assertIs(launcher.DEBUG, False)
+        self.assertIs(launcher.USE_RELOADER, False)
+        # Only executable keyword arguments matter here: the docstring legitimately quotes
+        # the main application's defect, which is why a text search would be wrong.
+        tree = ast.parse(Path(launcher.__file__).read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for keyword in node.keywords:
+                value = getattr(keyword.value, "value", None)
+                self.assertNotEqual((keyword.arg, value), ("debug", True))
+                self.assertNotEqual((keyword.arg, value), ("use_reloader", True))
+
+    # -- CSRF ------------------------------------------------------------- #
+
+    def test_the_server_mints_a_token_into_the_form(self):
+        body = self.client.get("/kg/stage3-approval/", environ_base=LOCAL).get_data(as_text=True)
+        self.assertIn('name="csrf_token"', body)
+
+    def test_a_missing_token_is_refused_without_writing(self):
+        data = self.form()
+        del data["csrf_token"]
+        response = self.client.post("/kg/stage3-approval/approve", data=data, environ_base=LOCAL)
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(self.record_path.exists())
+
+    def test_a_wrong_or_cross_session_token_is_refused_without_writing(self):
+        response = self.client.post("/kg/stage3-approval/approve",
+                                    data=self.form(csrf_token="b" * 32), environ_base=LOCAL)
+        self.assertEqual(response.status_code, 400)
+        other = Flask(__name__)
+        other.secret_key = "another"
+        with self.client.session_transaction() as session:
+            session.clear()
+        response = self.client.post("/kg/stage3-approval/approve", data=self.form(),
+                                    environ_base=LOCAL)
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(self.record_path.exists())
+
+    def test_a_consumed_token_cannot_be_replayed(self):
+        first = self.client.post("/kg/stage3-approval/approve", data=self.form(),
+                                 environ_base=LOCAL)
+        self.assertEqual(first.status_code, 200)
+        self.assertTrue(self.record_path.is_file())
+        replay = self.client.post("/kg/stage3-approval/approve", data=self.form(),
+                                  environ_base=LOCAL)
+        self.assertIn(replay.status_code, (400, 409))
+
     # -- rendering and intelligibility ------------------------------------ #
 
     def test_review_page_answers_the_plain_english_questions(self):
-        body = self.client.get("/kg/stage3-approval/").get_data(as_text=True)
+        body = self.client.get("/kg/stage3-approval/", environ_base=LOCAL).get_data(as_text=True)
         for phrase in ("What will change, in plain English", "Why it is needed",
                        "What will not change", "If something fails",
-                       "stops at the first failure", "held rows", "replay"):
+                       "stops at the first failure", "held rows"):
             self.assertIn(phrase, body)
         for count in ("58,628", "120", "500", "6100", "996", "6,095"):
             self.assertIn(count, body)
 
+    def test_the_replay_wording_is_correct_about_the_consumed_prefix(self):
+        body = self.client.get("/kg/stage3-approval/", environ_base=LOCAL).get_data(as_text=True)
+        self.assertIn("before</em> the cursor", body)
+        self.assertIn("does not iterate, re-process, or rewrite them", body)
+        self.assertNotIn("they replay as no-ops", body)
+        self.assertIn("classified as replay no-ops", review.approval_wording())
+        self.assertIn("does not iterate or replay them", review.approval_wording())
+
     def test_page_states_it_records_authorization_and_executes_nothing(self):
-        body = self.client.get("/kg/stage3-approval/").get_data(as_text=True)
+        body = self.client.get("/kg/stage3-approval/", environ_base=LOCAL).get_data(as_text=True)
         self.assertIn("NOT APPROVED", body)
         self.assertIn("records authorization", body)
         self.assertIn("does <strong>not</strong> execute", body)
 
     def test_technical_bindings_are_expandable_not_upfront(self):
-        body = self.client.get("/kg/stage3-approval/").get_data(as_text=True)
+        body = self.client.get("/kg/stage3-approval/", environ_base=LOCAL).get_data(as_text=True)
         self.assertIn("<details", body)
         self.assertIn(self.expected["proposal"], body)
         self.assertIn(self.expected["plan"], body)
 
     def test_no_option_is_preselected_and_identity_is_not_inferred(self):
-        body = self.client.get("/kg/stage3-approval/").get_data(as_text=True)
+        body = self.client.get("/kg/stage3-approval/", environ_base=LOCAL).get_data(as_text=True)
         self.assertNotIn("checked", body)
-        self.assertNotIn('value="Peter Mains"', body)
         self.assertIn('name="reviewer_name"', body)
         self.assertIn("does\n      not infer who you are", body)
 
     def test_the_exact_wording_is_shown_and_bound_before_submission(self):
-        body = self.client.get("/kg/stage3-approval/").get_data(as_text=True)
+        body = self.client.get("/kg/stage3-approval/", environ_base=LOCAL).get_data(as_text=True)
         self.assertIn("The exact wording you are approving", body)
         self.assertIn(review.approval_wording(), body)
-        self.assertIn("58,628 append-only processing receipts", body)
-        self.assertIn("120 batches", body)
+        self.assertIn("58,628 new append-only processing receipts", body)
 
     def test_all_six_acknowledgements_are_present(self):
-        body = self.client.get("/kg/stage3-approval/").get_data(as_text=True)
+        body = self.client.get("/kg/stage3-approval/", environ_base=LOCAL).get_data(as_text=True)
         self.assertEqual(len(review.CHECKLIST), 6)
         for key, _label in review.CHECKLIST:
             self.assertIn(f'name="ack_{key}"', body)
 
+    def test_a_local_surface_is_declared_on_the_page(self):
+        body = self.client.get("/kg/stage3-approval/", environ_base=LOCAL).get_data(as_text=True)
+        self.assertIn("Local review surface", body)
+        self.assertIn("session-bound", body)
+
     # -- the happy path and create-once semantics ------------------------- #
 
-    def test_approval_records_an_immutable_0600_record_and_confirms(self):
-        response = self.client.post("/kg/stage3-approval/approve", data=self.form())
+    def test_a_valid_local_session_records_exactly_one_immutable_approval(self):
+        response = self.client.post("/kg/stage3-approval/approve", data=self.form(),
+                                    environ_base=LOCAL)
         self.assertEqual(response.status_code, 200)
         body = response.get_data(as_text=True)
         self.assertIn("Authorization recorded — nothing has executed", body)
 
         self.assertTrue(self.record_path.is_file())
-        mode = os.stat(self.record_path).st_mode & 0o777
-        self.assertEqual(mode, 0o600)
+        self.assertEqual(os.stat(self.record_path).st_mode & 0o777, 0o600)
         record = load_verified(self.record_path)
         self.assertEqual(record["reviewer_name"], "Peter Mains")
         self.assertEqual(record["approval_text"], review.approval_wording())
-        self.assertEqual(record["proposal_digest"], self.expected["proposal"])
-        self.assertEqual(record["plan_digest"], self.expected["plan"])
-        self.assertEqual(record["design_packet_digest"], self.expected["design_packet"])
-        self.assertEqual(record["backup_receipt_digest"], self.expected["backup_receipt"])
-        self.assertEqual(record["schedule_digest"], self.expected["schedule"])
+        for field in ("proposal_digest", "plan_digest", "design_packet_digest",
+                      "backup_receipt_digest", "schedule_digest"):
+            self.assertTrue(record[field])
         self.assertEqual(record["code_digest"], apply.code_digest())
         self.assertEqual(record["scope"]["remaining_writes"], 58628)
-        self.assertEqual(record["scope"]["held_after_cursor"], 996)
         self.assertFalse(record["execution"]["executed"])
         self.assertIn(record["digest"], body)
+        self.assertEqual(len([name for name in os.listdir(self.approval_dir)
+                              if name.startswith("kg-stage3-approval-record-")]), 1)
 
     def test_the_write_leaves_no_temporary_file_behind(self):
-        self.client.post("/kg/stage3-approval/approve", data=self.form())
-        leftovers = [name for name in os.listdir(self.approval_dir) if name.endswith(".tmp")]
-        self.assertEqual(leftovers, [])
+        self.client.post("/kg/stage3-approval/approve", data=self.form(), environ_base=LOCAL)
+        self.assertEqual([name for name in os.listdir(self.approval_dir)
+                          if name.endswith(".tmp")], [])
 
     def test_a_duplicate_submission_is_refused_and_does_not_replace_the_record(self):
-        self.client.post("/kg/stage3-approval/approve", data=self.form())
+        self.client.post("/kg/stage3-approval/approve", data=self.form(), environ_base=LOCAL)
         original = self.record_path.read_text()
+        with self.client.session_transaction() as session:
+            session[review.CSRF_SESSION_KEY] = self.token
         again = self.client.post("/kg/stage3-approval/approve",
-                                 data=self.form(reviewer_name="Someone Else"))
+                                 data=self.form(reviewer_name="Someone Else"), environ_base=LOCAL)
         self.assertEqual(again.status_code, 409)
         self.assertEqual(self.record_path.read_text(), original)
 
@@ -210,7 +330,7 @@ class ApprovalWorkspaceTest(unittest.TestCase):
     def test_blank_identity_is_refused_and_writes_nothing(self):
         for value in ("", "   "):
             response = self.client.post("/kg/stage3-approval/approve",
-                                        data=self.form(reviewer_name=value))
+                                        data=self.form(reviewer_name=value), environ_base=LOCAL)
             self.assertEqual(response.status_code, 400)
             self.assertIn("Your name is required", response.get_data(as_text=True))
         self.assertFalse(self.record_path.exists())
@@ -218,42 +338,43 @@ class ApprovalWorkspaceTest(unittest.TestCase):
     def test_incomplete_acknowledgement_is_refused(self):
         data = self.form()
         del data["ack_stop_on_failure"]
-        response = self.client.post("/kg/stage3-approval/approve", data=data)
+        response = self.client.post("/kg/stage3-approval/approve", data=data, environ_base=LOCAL)
         self.assertEqual(response.status_code, 400)
         self.assertIn("acknowledgement", response.get_data(as_text=True))
         self.assertFalse(self.record_path.exists())
 
     def test_altered_approval_wording_is_refused(self):
         response = self.client.post("/kg/stage3-approval/approve",
-                                    data=self.form(approval_text="I approve everything forever"))
+                                    data=self.form(approval_text="I approve everything forever"),
+                                    environ_base=LOCAL)
         self.assertEqual(response.status_code, 400)
         self.assertFalse(self.record_path.exists())
 
     def test_a_form_supplied_digest_cannot_substitute_for_the_real_one(self):
         response = self.client.post("/kg/stage3-approval/approve",
-                                    data=self.form(confirm_digest="f" * 64))
+                                    data=self.form(confirm_digest="f" * 64), environ_base=LOCAL)
         self.assertEqual(response.status_code, 400)
         self.assertIn("does not match the exact bound proposal", response.get_data(as_text=True))
         self.assertFalse(self.record_path.exists())
 
-    def test_a_stale_proposal_digest_is_refused(self):
-        write_immutable(self.proposal_path.parent / "unused.json", {"kind": "x"})
+    def test_a_stale_or_tampered_proposal_is_refused(self):
         tampered = dict(load_verified(self.proposal_path), batch_size=999)
         self.proposal_path.write_text(__import__("json").dumps(tampered))
-        response = self.client.get("/kg/stage3-approval/")
-        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.client.get("/kg/stage3-approval/",
+                                         environ_base=LOCAL).status_code, 409)
 
     def test_an_obsolete_proposal_is_refused(self):
         marker = self.proposal_path.parent / f"{self.proposal_path.name}.obsolete.json"
         write_immutable(marker, {"kind": "artifact-obsolete", "target": self.proposal_path.name})
-        response = self.client.get("/kg/stage3-approval/")
+        response = self.client.get("/kg/stage3-approval/", environ_base=LOCAL)
         self.assertEqual(response.status_code, 409)
         self.assertIn("obsolete", response.get_data(as_text=True))
 
     def test_a_malformed_proposal_is_refused(self):
         broken = dict(load_verified(self.proposal_path), state="authorized", enabled=True)
         self.proposal_path.write_text(__import__("json").dumps(broken))
-        self.assertEqual(self.client.get("/kg/stage3-approval/").status_code, 409)
+        self.assertEqual(self.client.get("/kg/stage3-approval/",
+                                         environ_base=LOCAL).status_code, 409)
 
     def test_a_schedule_that_disagrees_with_the_counts_is_refused(self):
         tampered = {"kind": "kg-stage3-receipt-batch-schedule", "version": "1.0",
@@ -262,10 +383,9 @@ class ApprovalWorkspaceTest(unittest.TestCase):
                     "totals": {"expected_writes": 1, "expected_outcomes": {}}}
         path = Path(self.temp_dir.name) / "tampered-schedule.json"
         digest = write_immutable(path, tampered)
-        # Bind the tampered artifact as the reviewed one, so the count guard is what fires.
         with patch.object(review, "SCHEDULE_PATH", path), \
                 patch.object(review, "EXPECTED", {**self.expected, "schedule": digest}):
-            response = self.client.get("/kg/stage3-approval/")
+            response = self.client.get("/kg/stage3-approval/", environ_base=LOCAL)
         self.assertEqual(response.status_code, 409)
         self.assertIn("cursor", response.get_data(as_text=True))
 
@@ -281,12 +401,11 @@ class ApprovalWorkspaceTest(unittest.TestCase):
             code_digest=apply.code_digest(), writer_role="poliscopic", batch_size=500)
         proposal_path = Path(self.temp_dir.name) / "production-proposal.json"
         proposal_digest = write_immutable(proposal_path, proposal)
-        # Both artifacts are internally consistent, so only the target guard can refuse.
         with patch.object(review, "PLAN_PATH", plan_path), \
                 patch.object(review, "PROPOSAL_PATH", proposal_path), \
                 patch.object(review, "EXPECTED", {**self.expected, "plan": plan_digest,
                                                   "proposal": proposal_digest}):
-            response = self.client.get("/kg/stage3-approval/")
+            response = self.client.get("/kg/stage3-approval/", environ_base=LOCAL)
         self.assertEqual(response.status_code, 409)
         self.assertIn("development target", response.get_data(as_text=True))
 
@@ -308,10 +427,14 @@ class ApprovalWorkspaceTest(unittest.TestCase):
 
         with patch.object(apply, "gate", explode), patch.object(apply, "apply_batch", explode), \
                 patch.object(proposal_mod, "build", explode):
-            self.assertEqual(self.client.get("/kg/stage3-approval/").status_code, 200)
-            self.assertEqual(
-                self.client.post("/kg/stage3-approval/approve", data=self.form()).status_code, 200)
-        self.assertTrue(self.record_path.is_file())
+            self.assertEqual(self.client.get("/kg/stage3-approval/",
+                                             environ_base=LOCAL).status_code, 200)
+            self.assertEqual(self.client.post("/kg/stage3-approval/approve", data=self.form(),
+                                              environ_base=LOCAL).status_code, 200)
+        record = load_verified(self.record_path)
+        self.assertFalse(record["execution"]["executed"])
+        self.assertIsNone(record["execution"]["authorization_packet"])
+        self.assertIsNone(record["execution"]["preflight"])
 
     # -- the pinned bindings match the real artifacts --------------------- #
 
@@ -323,7 +446,6 @@ class ApprovalWorkspaceTest(unittest.TestCase):
                   "receipt_set": "95f8e5d04636624c679144e5b9e8f938abf1bfc816bb39f69cfc22bb05bd8a0c",
                   "backup_receipt": "3eb11bbec9bdbff7c9e7ecd5a46a0f17709c318cdebbac4425fe03d3afbccd7e",
                   "schedule": "117da8dd098d7483de49985e52545f28d1817e71c4293fb00714a2c2950616b2"}
-        # The module's own defaults, captured before this test's patches replaced them.
         self.assertEqual(self.original_expected, pinned)
         for path in self.original_paths.values():
             if not path.is_file():

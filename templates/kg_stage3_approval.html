@@ -50,6 +50,9 @@
       <h1>Approve the Stage 3 receipt continuation</h1>
       <p class="text-muted mb-0">Development database only. This page records your authorization;
       it does not run anything.</p>
+      <p class="text-muted small mb-0">Local review surface: loopback only, disabled unless a
+      dedicated launcher enables it, and it will not accept a submission without a session-bound
+      form token.</p>
     </div>
     <span class="badge text-bg-secondary fs-6">NOT APPROVED</span>
   </div>
@@ -77,7 +80,7 @@
     through the current extractor. Nothing about the documents themselves changes.</p>
     <p class="mb-0"><strong>{{ counts.writes }} new receipts</strong> would be appended, in
     <strong>{{ counts.batches }} batches</strong> of at most {{ counts.batch_size }} rows each,
-    starting right after position {{ counts.cursor }} of the plan.</p>
+    starting strictly after position {{ counts.cursor }} of the plan.</p>
   </div></div>
 
   <div class="row g-3 mb-4">
@@ -91,7 +94,9 @@
       <h2 class="h6">What will not change</h2>
       <ul class="mb-0">
         <li>No document text, and no <span class="mono">swept_at</span> timestamp.</li>
-        <li>The {{ counts.existing_replay }} receipts already stored: they replay as no-ops.</li>
+        <li>The {{ counts.existing_replay }} receipts already stored: they sit inside the consumed
+        prefix, which is <em>before</em> the cursor. They were classified as replay no-ops, and this
+        run starts after them, so it does not iterate, re-process, or rewrite them.</li>
         <li>Nothing outside the receipt table, and nothing in production.</li>
       </ul>
     </div></div></div>
@@ -100,10 +105,10 @@
   <div class="card mb-4"><div class="card-body">
     <h2 class="h5">If something fails</h2>
     <p class="mb-2">The run <strong>stops at the first failure</strong> instead of pressing on, so a
-    partial run cannot quietly become a wrong one. Because every receipt is keyed to an exact text
-    version, re-running is safe: work already recorded is recognised and skipped rather than
-    duplicated, which is why the {{ counts.existing_replay }} existing receipts stay exactly as
-    they are.</p>
+    partial run cannot quietly become a wrong one. Every receipt is keyed to an exact text version,
+    so re-running is idempotent: recorded work is recognised rather than duplicated. The
+    {{ counts.existing_replay }} receipts already stored are evidence for that — each was classified
+    as a replay no-op, and the cursor places this run after them rather than over them.</p>
     <p class="mb-0"><strong>Held rows are never written.</strong> {{ counts.held_after_cursor }}
     rows after the cursor are held (not eligible to be written), and the consumed prefix before the
     cursor contains a further {{ counts.held_in_consumed_prefix }} held rows. Held means held — a
@@ -111,6 +116,7 @@
   </div></div>
 
   <form method="post" action="{{ url_for('kg_stage3_approval.approve') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="card mb-4"><div class="card-body">
       <h2 class="h5">Confirm each point</h2>
       <p class="text-muted small">Every box must be ticked by you. None is pre-ticked.</p>

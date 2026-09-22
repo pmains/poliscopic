@@ -21,12 +21,13 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from flask import Blueprint, abort, render_template, request
+from flask import Blueprint, abort, render_template, request, session
 
 from scripts.kg import stage3_processing_receipt_apply as apply
 from scripts.kg import stage3_processing_receipt_apply_proposal as proposal_mod
@@ -65,6 +66,46 @@ HELD_IN_CONSUMED_PREFIX = 5
 APPROVAL_KIND = "kg-stage3-processing-receipt-human-approval"
 APPROVAL_VERSION = "1.0"
 
+#: This approval surface is unavailable unless a dedicated process enables it.  The
+#: blueprint existing is never sufficient: the main application does not register it, and
+#: a disabled process answers 404 rather than revealing a usable endpoint.
+ENABLE_FLAG = "POLISCOPIC_STAGE3_APPROVAL_UI"
+ENABLED_VALUE = "1"
+CSRF_SESSION_KEY = "stage3_approval_csrf"
+LOOPBACK_ADDRESSES = ("127.0.0.1", "::1")
+
+
+def enabled() -> bool:
+    """True only for a process that explicitly opted in."""
+    return os.environ.get(ENABLE_FLAG, "").strip() == ENABLED_VALUE
+
+
+def csrf_token() -> str:
+    """A cryptographically random token bound to this session.
+
+    The token is minted per session and compared in constant time on submission, so a
+    request from another session, a missing token, or a guessed token is refused.  It is
+    consumed after a successful submission, so replaying the same form is refused too.
+    """
+    token = session.get(CSRF_SESSION_KEY)
+    if not isinstance(token, str) or not token:
+        token = secrets.token_urlsafe(32)
+        session[CSRF_SESSION_KEY] = token
+    return token
+
+
+def _guard() -> None:
+    """Refuse before any other work: disabled by default, and loopback only.
+
+    The loopback check is defence in depth and never a substitute for the flag: a proxy
+    can make a remote caller look local, so the endpoint must also be explicitly enabled
+    by a dedicated launcher for the request to be considered at all.
+    """
+    if not enabled():
+        abort(404)
+    if request.remote_addr not in LOOPBACK_ADDRESSES:
+        abort(403)
+
 CHECKLIST = (
     ("development_target",
      "I confirm the target is the development database poliscopic_dev, and never production."),
@@ -86,12 +127,13 @@ def approval_wording() -> str:
     return (
         f"I have reviewed the Stage 3 processing-receipt continuation proposal "
         f"{EXPECTED['proposal']} and approve it for the development database only: "
-        f"{REMAINING_WRITES:,} append-only processing receipts across {BATCH_COUNT} batches "
-        f"of at most {BATCH_SIZE} rows, starting after the proven cursor {CURRENT_CURSOR}, "
-        f"with {HELD_AFTER_CURSOR} held rows after the cursor never written, the "
-        f"{EXISTING_REPLAY:,} existing receipts replayed as no-ops, and no "
-        f"supporting_documents.swept_at rewrite. I understand that approving records "
-        f"authorization only and does not execute anything."
+        f"{REMAINING_WRITES:,} new append-only processing receipts across {BATCH_COUNT} batches "
+        f"of at most {BATCH_SIZE} rows, starting strictly after the proven cursor "
+        f"{CURRENT_CURSOR}. That consumed prefix already holds {EXISTING_REPLAY:,} receipts "
+        f"classified as replay no-ops and {HELD_IN_CONSUMED_PREFIX} held rows; the run begins "
+        f"after them and does not iterate or replay them. The {HELD_AFTER_CURSOR} held rows "
+        f"after the cursor are never written, and no supporting_documents.swept_at is rewritten. "
+        f"I understand that approving records authorization only and does not execute anything."
     )
 
 
@@ -202,17 +244,25 @@ def _review_context() -> dict[str, Any]:
         },
         "expected": EXPECTED,
         "record_path": record_path,
+        "csrf_token": csrf_token(),
         "existing_record": load_verified(record_path) if record_path.is_file() else None,
     }
 
 
 @kg_stage3_approval_bp.get("/")
 def review():
+    _guard()
     return render_template("kg_stage3_approval.html", page="review", **_review_context())
 
 
 @kg_stage3_approval_bp.post("/approve")
 def approve():
+    _guard()
+    submitted_token = str(request.form.get("csrf_token") or "")
+    expected_token = session.get(CSRF_SESSION_KEY)
+    if not submitted_token or not isinstance(expected_token, str) or not expected_token \
+            or not secrets.compare_digest(submitted_token, expected_token):
+        abort(400, "The form token is missing, wrong, or belongs to another session.")
     context = _review_context()
     operation = context["operation"]
     errors: list[str] = []
@@ -273,5 +323,6 @@ def approve():
         abort(409, "An approval record for this proposal already exists and cannot be replaced.")
 
     stored = load_verified(path)
+    session.pop(CSRF_SESSION_KEY, None)
     return render_template("kg_stage3_approval.html", page="confirmed", record=stored,
                            **context)
