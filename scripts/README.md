@@ -10,14 +10,15 @@ is for things you actually invoke.
 
 | Script | What it does |
 |---|---|
-| **`run_pipeline.py`** | Orchestrates a daily scrape of all jurisdictions. Called by cron. Spawns `scrape_agendas.py` workers. |
-| **`scrape_agendas.py`** | Scrapes a single jurisdiction. Usage: `python scrape_agendas.py <jurisdiction> --sync` |
+| **`sync/runner.py`** | Canonical daily/weekly scheduler. Builds its 40-source plan from `scraper/source_registry.py`, runs resource-aware batches, and records state under `data/sync/`. |
+| **`scrape_agendas.py`** | Compatibility entry point for one source. Usage: `python scripts/scrape_agendas.py <source> --sync`. |
+| **`run_pipeline.py`** | Legacy scheduler retained for compatibility; new operations should use `sync/runner.py`. |
 
 **Flow:**
 ```
-run_pipeline.py  ─┬─ spawns ── scrape_agendas.py  (jurisdiction A)
-                  ├─ spawns ── scrape_agendas.py  (jurisdiction B)
-                  └─ spawns ── scrape_agendas.py  (… up to N workers)
+sync/runner.py  ─┬─ invokes ── scraper/main.py  (serial browser sources)
+                ├─ invokes ── scraper/main.py  (parallel HTTP sources)
+                └─ records ── data/sync/state.json
 ```
 
 ---
@@ -33,8 +34,8 @@ Both run independently of the pipeline — can be called after a scrape
 or on a separate schedule.
 
 ```
-run_pipeline.py  ──scrape done──▶ check_docs.py   (doc availability)
-                                  check_minutes.py (minutes URL discovery)
+sync/runner.py  ──scrape done──▶ check_docs.py   (doc availability)
+                                check_minutes.py (minutes URL discovery)
 ```
 
 ---

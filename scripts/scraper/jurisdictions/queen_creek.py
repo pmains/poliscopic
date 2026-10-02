@@ -232,3 +232,102 @@ def extract_meeting_items(agenda_url: str) -> tuple[list[dict], list[dict]]:
     items = parse_agenda_items(pdf_text)
     docs = extract_supporting_docs(pdf_text)
     return items, docs
+
+
+def sync(args) -> int:
+    """Search, extract, and persist Queen Creek meetings."""
+    from sqlalchemy import select
+
+    from db import Meeting, get_session, init_db, replace_meeting_data_safe, update_sync_status
+
+    init_db()
+    print("Searching Queen Creek meetings via Granicus RSS...")
+    meetings = search_meetings()
+    if not meetings:
+        print("No Queen Creek meetings found.")
+        return 0
+
+    start_date = getattr(args, "start_date", None)
+    end_date = getattr(args, "end_date", None)
+    if start_date:
+        meetings = [m for m in meetings if m.get("meeting_date", "") >= start_date]
+    if end_date:
+        meetings = [m for m in meetings if m.get("meeting_date", "") <= end_date]
+    if not meetings:
+        print("No Queen Creek meetings found in date range.")
+        return 0
+    if getattr(args, "limit", None):
+        meetings = meetings[: args.limit]
+    print(f"Found {len(meetings)} Queen Creek meeting(s)")
+
+    session = get_session()
+    try:
+        for index, meeting in enumerate(meetings, 1):
+            meeting_id = meeting["meeting_id"]
+            meeting_date = meeting.get("meeting_date", "")
+            body_code = meeting.get("body_code", "queen-creek-cc")
+            meeting_dict = {
+                "meeting_id": meeting_id,
+                "meeting_date": meeting_date,
+                "meeting_type": meeting.get("meeting_type", ""),
+                "meeting_title": meeting.get(
+                    "meeting_title", meeting.get("body_name", "")
+                ),
+                "source_url": meeting.get("source_url", ""),
+            }
+            existing = session.execute(
+                select(Meeting).where(
+                    Meeting.body == body_code,
+                    Meeting.meeting_id == meeting_id,
+                )
+            ).scalar_one_or_none()
+            if (
+                existing
+                and existing.sync_status == "complete"
+                and (existing.item_count_actual or 0) > 0
+                and not getattr(args, "force", False)
+            ):
+                print(
+                    f"  [{index}/{len(meetings)}] {meeting_id} {meeting_date}: "
+                    f"already synced (items={existing.item_count_actual})"
+                )
+                continue
+
+            items, documents = [], []
+            if meeting.get("agenda_url"):
+                items, documents = extract_meeting_items(meeting["agenda_url"])
+            try:
+                replace_meeting_data_safe(
+                    session,
+                    body_code,
+                    meeting_id,
+                    meeting_dict,
+                    list(items),
+                    supporting_doc_dicts=list(documents),
+                )
+                status = "complete" if items else "no_agenda"
+                print(
+                    f"  [{index}/{len(meetings)}] {meeting_id} {meeting_date}: "
+                    f"{len(items)} items, {len(documents)} docs ({status})"
+                )
+                update_sync_status(session, body_code, meeting_id, status)
+                session.commit()
+            except Exception as exc:
+                session.rollback()
+                log.exception("Failed to sync Queen Creek meeting %s", meeting_id)
+                try:
+                    update_sync_status(
+                        session,
+                        body_code,
+                        meeting_id,
+                        "failed",
+                        error=str(exc)[:500],
+                    )
+                    session.commit()
+                except Exception:
+                    session.rollback()
+    finally:
+        session.close()
+
+    print(f"Synced {len(meetings)} Queen Creek meeting(s)")
+    return 0

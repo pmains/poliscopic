@@ -12,6 +12,12 @@ import logging
 import urllib.request
 from typing import Optional
 
+from scraper.platforms.civicclerk import (
+    CivicClerkConfig,
+    fetch_meeting_items,
+    search_meetings as search_civicclerk_meetings,
+)
+
 log = logging.getLogger(__name__)
 
 SOURCE_SYSTEM = "civicclerk"
@@ -33,6 +39,12 @@ BODY_MAP: dict[str, tuple[str, str, str]] = {
 }
 
 DEFAULT_BODY_SLUGS = ["fountain-hills-cc", "fountain-hills-pz"]
+
+CONFIG = CivicClerkConfig(
+    subdomain=SUBDOMAIN,
+    body_map=BODY_MAP,
+    default_body="fountain-hills-cc",
+)
 
 
 def fetch_all_events() -> list[dict]:
@@ -137,3 +149,134 @@ def extract_supporting_docs(evt: dict) -> list[dict]:
                 "document_type": ftype or "Meeting Document",
             })
     return docs
+
+
+def sync(args) -> int:
+    """Search, extract, and persist Fountain Hills meetings."""
+    from sqlalchemy import select
+
+    from db import (
+        Meeting,
+        get_session,
+        init_db,
+        replace_meeting_data_safe,
+        update_sync_status,
+    )
+
+    init_db()
+    print("Searching Fountain Hills meetings via CivicClerk API...")
+    meetings = search_civicclerk_meetings(CONFIG, start_date="2025-08-01")
+    if not meetings:
+        print("No Fountain Hills meetings found.")
+        return 0
+
+    start_date = getattr(args, "start_date", None)
+    end_date = getattr(args, "end_date", None)
+    if start_date:
+        meetings = [m for m in meetings if m.get("meeting_date", "") >= start_date]
+    if end_date:
+        meetings = [m for m in meetings if m.get("meeting_date", "") <= end_date]
+    if not meetings:
+        print("No Fountain Hills meetings found in date range.")
+        return 0
+    if getattr(args, "limit", None):
+        meetings = meetings[: args.limit]
+    print(f"Found {len(meetings)} Fountain Hills meeting(s)")
+
+    session = get_session()
+    total_items = 0
+    try:
+        for index, meeting in enumerate(meetings, 1):
+            event_id = meeting.get("event_id") or int(meeting.get("meeting_id", 0))
+            event_key = str(event_id)
+            meeting_date = meeting.get("meeting_date", "")
+            body_code = meeting.get("body_code", "fountain-hills-cc")
+            meeting_dict = {
+                "meeting_id": event_key,
+                "meeting_date": meeting_date,
+                "meeting_type": meeting.get("meeting_type", ""),
+                "meeting_title": meeting.get("meeting_title", ""),
+                "source_url": meeting.get("source_url", ""),
+            }
+
+            existing = session.execute(
+                select(Meeting).where(
+                    Meeting.body == body_code,
+                    Meeting.meeting_id == event_key,
+                )
+            ).scalar_one_or_none()
+            if (
+                existing
+                and existing.sync_status == "complete"
+                and (existing.item_count_actual or 0) > 0
+                and not getattr(args, "force", False)
+            ):
+                print(
+                    f"  [{index}/{len(meetings)}] {event_id} {meeting_date}: "
+                    f"already synced, {existing.item_count_actual or 0} items"
+                )
+                total_items += existing.item_count_actual or 0
+                continue
+
+            try:
+                items: list[dict] = []
+                documents: list[dict] = []
+                if event_id:
+                    request = urllib.request.Request(
+                        f"{CONFIG.api_base}/Events/{event_id}",
+                        headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+                    )
+                    try:
+                        with urllib.request.urlopen(request, timeout=10) as response:
+                            event = json.loads(response.read())
+                        agenda_id = int(event.get("agendaId") or 0)
+                        if agenda_id > 0:
+                            items, documents = fetch_meeting_items(
+                                CONFIG,
+                                int(event_id),
+                                agenda_id,
+                                body_code,
+                                meeting_date,
+                            )
+                    except Exception:
+                        log.debug(
+                            "Structured agenda unavailable for Fountain Hills %s",
+                            event_id,
+                            exc_info=True,
+                        )
+
+                replace_meeting_data_safe(
+                    session,
+                    body_code,
+                    event_key,
+                    meeting_dict,
+                    items,
+                    supporting_doc_dicts=documents,
+                )
+                total_items += len(items)
+                document_summary = f" ({len(documents)} doc(s))" if documents else ""
+                print(
+                    f"  [{index}/{len(meetings)}] {event_id} {meeting_date}: "
+                    f"{len(items)} items synced{document_summary}"
+                )
+            except Exception as exc:
+                log.exception("Failed Fountain Hills meeting %s", event_id)
+                try:
+                    update_sync_status(
+                        session,
+                        body_code,
+                        event_key,
+                        "failed",
+                        error=str(exc)[:500],
+                    )
+                    session.commit()
+                except Exception:
+                    session.rollback()
+    finally:
+        session.close()
+
+    print(
+        f"Synced {total_items} Fountain Hills items across "
+        f"{len(meetings)} meeting(s)"
+    )
+    return 0

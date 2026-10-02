@@ -18,12 +18,10 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import subprocess
-import sys
 import tempfile
-from datetime import datetime, date
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -259,12 +257,12 @@ def download_pdf(url: str) -> Optional[bytes]:
 
 # ── Sync entry point ─────────────────────────────────────────────────────────
 
-def sync(start_date: str = "", end_date: str = "", limit: int = 0) -> list[dict]:
-    """Fetch documents and return structured meeting data.
-
-    This is the main entry point called from main.py.
-    Returns a list of dicts ready for replace_meeting_data_safe.
-    """
+def fetch_meetings(
+    start_date: str = "",
+    end_date: str = "",
+    limit: int = 0,
+) -> list[dict]:
+    """Fetch documents and return records ready for meeting persistence."""
     docs = search_documents(start_date=start_date, end_date=end_date, limit=limit)
     log.info("Found %d Gilbert PC document(s)", len(docs))
 
@@ -299,6 +297,92 @@ def sync(start_date: str = "", end_date: str = "", limit: int = 0) -> list[dict]
     return result
 
 
+def sync(args) -> int:
+    """Fetch and persist Gilbert Planning Commission meeting records."""
+    from sqlalchemy import select
+
+    from db import Meeting, get_session, init_db, replace_meeting_data_safe
+
+    init_db()
+    meetings = fetch_meetings(
+        start_date=getattr(args, "start_date", None) or "",
+        end_date=getattr(args, "end_date", None) or "",
+        limit=getattr(args, "limit", 0) or 0,
+    )
+    if not meetings:
+        print("No Gilbert Planning Commission meetings found.")
+        return 0
+
+    session = get_session()
+    total = 0
+    try:
+        for meeting_data in meetings:
+            meeting_id = meeting_data["meeting_id"]
+            meeting_date = meeting_data["meeting_date"]
+            body_code = meeting_data["body_code"]
+            minutes_url = meeting_data.get("minutes_url", "")
+            if not meeting_date:
+                continue
+
+            existing = session.execute(
+                select(Meeting).where(
+                    Meeting.body == body_code,
+                    Meeting.meeting_id == meeting_id,
+                )
+            ).scalar_one_or_none()
+            if (
+                existing
+                and existing.sync_status == "complete"
+                and (existing.item_count_actual or 0) > 0
+                and not getattr(args, "force", False)
+            ):
+                continue
+
+            meeting = {
+                "meeting_id": meeting_id,
+                "meeting_date": meeting_date,
+                "meeting_type": meeting_data.get(
+                    "meeting_type", "Regular Meeting"
+                ),
+                "meeting_title": meeting_data.get(
+                    "meeting_title", PUBLIC_BODY_NAME
+                ),
+                "minutes_url": minutes_url,
+                "source_url": minutes_url or "",
+            }
+            try:
+                replace_meeting_data_safe(
+                    session,
+                    body_code,
+                    meeting_id,
+                    meeting,
+                    [],
+                )
+                total += 1
+                log.info(
+                    "%s %s %s minutes=%s",
+                    datetime.now().strftime("%H:%M:%S"),
+                    meeting_date,
+                    meeting_id[:35],
+                    minutes_url[:50],
+                )
+            except Exception as exc:
+                log.debug(
+                    "Failed to sync Gilbert PC meeting %s: %s",
+                    meeting_id,
+                    exc,
+                )
+    finally:
+        session.close()
+
+    log.info(
+        "%s Synced %d Gilbert Planning Commission meetings",
+        datetime.now().strftime("%H:%M:%S"),
+        total,
+    )
+    return 0
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Gilbert PC scraper")
@@ -310,7 +394,11 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    docs = sync(start_date=args.start_date, end_date=args.end_date, limit=args.limit)
+    docs = fetch_meetings(
+        start_date=args.start_date,
+        end_date=args.end_date,
+        limit=args.limit,
+    )
     print(f"Found {len(docs)} Gilbert PC meeting(s) with minutes")
     for d in docs:
         print(f"  {d['meeting_date']} {d['meeting_id'][:30]} minutes_url={d['minutes_url'][:50]}")

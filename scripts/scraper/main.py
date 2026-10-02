@@ -18,6 +18,7 @@ from scraper.common.utils import (
 )
 from scraper.common.models import Meeting
 from scraper.cli import parse_args, parse_date
+from scraper.source_registry import adapter_for_command
 from scraper.common.search import parse_search_results_html, build_search_url, extract_meetings
 from scraper.common.io_utils import (
     slugify, normalize_meeting_date, _normalize_text_date,
@@ -1147,7 +1148,7 @@ async def main() -> int:
         import urllib.parse as _gy_url
         init_db()
         body_slugs_str = getattr(args, "bodies", None) or ",".join(DEFAULT_BODY_SLUGS)
-        body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
+        body_slugs = None if body_slugs_str == "all" else [s.strip() for s in body_slugs_str.split(",") if s.strip()]
         _month_val = getattr(args, "month", None)
         _year_val = getattr(args, "year", None)
         if _month_val:
@@ -1181,7 +1182,8 @@ async def main() -> int:
             agenda_url = m.get("agenda_url", "")
             meeting_type = m.get("meeting_type", "")
             meeting_title = m.get("meeting_title", m.get("body_name", ""))
-            meeting_dict = {"meeting_id": meeting_id, "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": agenda_url}
+            minutes_url = m.get("minutes_url", "")
+            meeting_dict = {"meeting_id": meeting_id, "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": agenda_url, "minutes_url": minutes_url}
             from db import Meeting as MeetingModel
             from sqlalchemy import select
             existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)).scalar_one_or_none()
@@ -1201,6 +1203,16 @@ async def main() -> int:
                 # and fetch docs + text from that memo page, assigning the correct
                 # agenda_item_number to each document and item text to the item.
                 supp_docs = []
+                if minutes_url:
+                    supp_docs.append({
+                        "agenda_item_id": "0",
+                        "agenda_item_number": "",
+                        "document_title": f"{meeting_title} Minutes",
+                        "document_url": minutes_url,
+                        "document_type": "Minutes",
+                        "body": body_code,
+                        "meeting_id": meeting_id,
+                    })
                 seen_memo_urls: set[str] = set()
                 import re as _gy_re
                 # Build item_number -> memo_url map by walking item anchor blocks.
@@ -1977,75 +1989,6 @@ async def main() -> int:
         print("%s Synced %d Gilbert agenda items across %d meeting(s)" % (ts, total_items, meeting_count))
         return 0
 
-    # ── Gilbert Planning Commission sync (via CivicPlus Document Folder) ──
-    if args.source == "gilbert-planning" and args.sync:
-        import datetime as _dt
-        from db import get_session, init_db, replace_meeting_data_safe
-        from db import Meeting as MeetingModel
-        from sqlalchemy import select
-
-        from scraper.jurisdictions.gilbert_planning import sync as gilbert_pc_sync
-
-        init_db()
-
-        start_date = getattr(args, "start_date", None)
-        end_date = getattr(args, "end_date", None)
-        limit = getattr(args, "limit", 0) or 0
-
-        meetings = gilbert_pc_sync(
-            start_date=start_date or "",
-            end_date=end_date or "",
-            limit=limit,
-        )
-        if not meetings:
-            print("No Gilbert Planning Commission meetings found.")
-            return 0
-
-        session = get_session()
-        total = 0
-
-        for m in meetings:
-            meeting_id = m["meeting_id"]
-            meeting_date = m["meeting_date"]
-            body_code = m["body_code"]
-            minutes_url = m.get("minutes_url", "")
-            minutes_title = m.get("minutes_title", "")
-
-            if not meeting_date:
-                continue
-
-            meeting_dict = {
-                "meeting_id": meeting_id,
-                "meeting_date": meeting_date,
-                "meeting_type": m.get("meeting_type", "Regular Meeting"),
-                "meeting_title": m.get("meeting_title", "Gilbert Planning Commission"),
-                "minutes_url": minutes_url,
-                "source_url": minutes_url or "",
-            }
-
-            existing = session.execute(
-                select(MeetingModel).where(
-                    MeetingModel.body == body_code,
-                    MeetingModel.meeting_id == meeting_id,
-                )
-            ).scalar_one_or_none()
-
-            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
-                continue
-
-            try:
-                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, [])
-                total += 1
-                ts = _dt.datetime.now().strftime("%H:%M:%S")
-                log.info("%s %s %s minutes=%s", ts, meeting_date, meeting_id[:35], minutes_url[:50])
-            except Exception as e:
-                log.debug("Failed to sync Gilbert PC meeting %s: %s", meeting_id, e)
-
-        session.close()
-        ts = _dt.datetime.now().strftime("%H:%M:%S")
-        log.info("%s Synced %d Gilbert Planning Commission meetings", ts, total)
-        return 0
-
     # ── Scottsdale sync (via PDF archive) ──
     if args.source == "scottsdale" and args.sync:
         import datetime as _dt
@@ -2513,7 +2456,19 @@ async def main() -> int:
             agenda_url = m.get("agenda_url", "")
             meeting_type = m.get("meeting_type", "")
             meeting_title = m.get("meeting_title", m.get("body_name", ""))
-            meeting_dict = {"meeting_id": meeting_id, "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": agenda_url}
+            minutes_url = m.get("minutes_url", "")
+            meeting_dict = {"meeting_id": meeting_id, "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": agenda_url, "minutes_url": minutes_url}
+            supp_docs = []
+            if minutes_url:
+                supp_docs.append({
+                    "agenda_item_id": "0",
+                    "agenda_item_number": "",
+                    "document_title": f"{meeting_title} Minutes",
+                    "document_url": minutes_url,
+                    "document_type": "Minutes",
+                    "body": body_code,
+                    "meeting_id": meeting_id,
+                })
             from db import Meeting as MeetingModel
             from sqlalchemy import select
             existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)).scalar_one_or_none()
@@ -2527,14 +2482,14 @@ async def main() -> int:
             try:
                 items = fetch_agenda_items_async(agenda_url, meeting_id, body_code)
                 if not items:
-                    replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, [])
+                    replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, [], supporting_doc_dicts=supp_docs)
                     print("  [%d/%d] %s %s: no items" % (idx, meeting_count, meeting_id, meeting_date))
                     continue
                 agenda_item_dicts = []
                 for it in items:
                     an = it.get("agenda_item_number", "")
                     agenda_item_dicts.append({"agenda_item_id": body_code + "-" + meeting_id + "_" + an, "meeting_id": meeting_id, "agenda_item_number": an, "agenda_item_title": it.get("agenda_item_title", ""), "agenda_item_text": it.get("agenda_item_text", ""), "source_body": body_code, "source_url": agenda_url, "sort_order": it.get("sort_order", 0)})
-                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, agenda_item_dicts)
+                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, agenda_item_dicts, supporting_doc_dicts=supp_docs)
                 total_items += len(items)
                 print("  [%d/%d] %s %s: %d item(s)" % (idx, meeting_count, meeting_id, meeting_date, len(items)))
             except Exception as e:
@@ -2558,7 +2513,7 @@ async def main() -> int:
         )
         init_db()
         body_slugs_str = getattr(args, "bodies", None) or ",".join(DEFAULT_BODY_SLUGS)
-        body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
+        body_slugs = None if body_slugs_str == "all" else [s.strip() for s in body_slugs_str.split(",") if s.strip()]
         _month_val = getattr(args, "month", None)
         _year_val = getattr(args, "year", None)
         if _month_val:
@@ -2592,7 +2547,19 @@ async def main() -> int:
             agenda_url = m.get("agenda_url", "")
             meeting_type = m.get("meeting_type", "")
             meeting_title = m.get("body_name", "")
-            meeting_dict = {"meeting_id": meeting_id, "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": agenda_url}
+            minutes_url = m.get("minutes_url", "")
+            meeting_dict = {"meeting_id": meeting_id, "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": agenda_url, "minutes_url": minutes_url}
+            supp_docs = []
+            if minutes_url:
+                supp_docs.append({
+                    "agenda_item_id": "0",
+                    "agenda_item_number": "",
+                    "document_title": f"{meeting_title} Minutes",
+                    "document_url": minutes_url,
+                    "document_type": "Minutes",
+                    "body": body_code,
+                    "meeting_id": meeting_id,
+                })
             from db import Meeting as MeetingModel
             from sqlalchemy import select
             existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)).scalar_one_or_none()
@@ -2603,14 +2570,14 @@ async def main() -> int:
                 html = fetch_page(agenda_url)
                 items = parse_agenda_items(html, meeting_id)
                 if not items:
-                    replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, [])
+                    replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, [], supporting_doc_dicts=supp_docs)
                     print("  [%d/%d] %s %s: no items" % (idx, meeting_count, meeting_id, meeting_date))
                     continue
                 agenda_item_dicts = []
                 for it in items:
                     an = it.get("agenda_item_number", "")
                     agenda_item_dicts.append({"agenda_item_id": body_code + "-" + meeting_id + "_" + an, "meeting_id": meeting_id, "agenda_item_number": an, "agenda_item_title": it.get("agenda_item_title", ""), "agenda_item_text": it.get("agenda_item_text", ""), "source_body": body_code, "source_url": agenda_url, "sort_order": it.get("sort_order", 0)})
-                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, agenda_item_dicts)
+                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, agenda_item_dicts, supporting_doc_dicts=supp_docs)
 
                 # ── Glendale Results PDF vote extraction ──
                 try:
@@ -3869,390 +3836,11 @@ async def main() -> int:
         print(f"{ts} Synced {total_items} Tucson PC agenda items across {meeting_count} meeting(s)")
         return 0
 
-    # ── Paradise Valley sync (Granicus RSS) ──
-    if args.source == "paradise-valley" and args.sync:
-        import datetime as _dt
-        from db import get_session, init_db, update_sync_status, replace_meeting_data_safe
-        from db import Meeting as MeetingModel
-        from sqlalchemy import select
-
-        init_db()
-
-        from scraper.jurisdictions.paradise_valley import search_meetings
-
-        print("Searching Paradise Valley meetings via Granicus RSS...")
-        meetings = search_meetings()
-        if not meetings:
-            print("No Paradise Valley meetings found.")
-            return 0
-
-        # Filter by date range if specified
-        start_date_str = getattr(args, "start_date", None)
-        end_date_str = getattr(args, "end_date", None)
-        if start_date_str:
-            meetings = [m for m in meetings if m.get("meeting_date", "") >= start_date_str]
-        if end_date_str:
-            meetings = [m for m in meetings if m.get("meeting_date", "") <= end_date_str]
-        if not meetings:
-            print("No Paradise Valley meetings found in date range.")
-            return 0
-        if args.limit:
-            meetings = meetings[:args.limit]
-        print("Found %d Paradise Valley meeting(s)" % len(meetings))
-
-        session = get_session()
-        total_items = 0
-        meeting_count = len(meetings)
-        for idx, m in enumerate(meetings, 1):
-            meeting_id = m["meeting_id"]
-            meeting_date = m.get("meeting_date", "")
-            body_code = m.get("body_code", "paradise-valley-cc")
-            meeting_title = m.get("meeting_title", m.get("body_name", ""))
-            meeting_type = m.get("meeting_type", "")
-            source_url = m.get("source_url", "")
-
-            meeting_dict = {
-                "meeting_id": meeting_id, "meeting_date": meeting_date,
-                "meeting_type": meeting_type, "meeting_title": meeting_title,
-                "source_url": source_url,
-            }
-
-            existing = session.execute(
-                select(MeetingModel).where(
-                    MeetingModel.body == body_code,
-                    MeetingModel.meeting_id == meeting_id,
-                )
-            ).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
-                print(f"  [{idx}/{meeting_count}] {meeting_id} {meeting_date}: already synced")
-                continue
-
-            try:
-                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, [])
-                ts = _dt.datetime.now().strftime("%H:%M:%S")
-                print(f"{ts} [{idx}/{meeting_count}] {meeting_id} {meeting_date}: meeting metadata synced")
-                update_sync_status(session, body_code, meeting_id, "no_agenda")
-                session.commit()
-            except Exception as e:
-                log.error("Failed to sync Paradise Valley meeting %s: %s", meeting_id, e)
-                try:
-                    update_sync_status(session, body_code, meeting_id, "failed", error=str(e)[:500])
-                    session.commit()
-                except Exception:
-                    pass
-
-        session.close()
-        print(f"Synced {meeting_count} Paradise Valley meeting(s)")
-        return 0
-
-    # ── Queen Creek sync (Granicus RSS) ──
-    if args.source == "queen-creek" and args.sync:
-        import datetime as _dt
-        from db import get_session, init_db, update_sync_status, replace_meeting_data_safe
-        from db import Meeting as MeetingModel
-        from sqlalchemy import select
-
-        init_db()
-
-        from scraper.jurisdictions.queen_creek import search_meetings, extract_meeting_items
-
-        print("Searching Queen Creek meetings via Granicus RSS...")
-        meetings = search_meetings()
-        if not meetings:
-            print("No Queen Creek meetings found.")
-            return 0
-
-        # Filter by date range if specified
-        start_date_str = getattr(args, "start_date", None)
-        end_date_str = getattr(args, "end_date", None)
-        if start_date_str:
-            meetings = [m for m in meetings if m.get("meeting_date", "") >= start_date_str]
-        if end_date_str:
-            meetings = [m for m in meetings if m.get("meeting_date", "") <= end_date_str]
-        if not meetings:
-            print("No Queen Creek meetings found in date range.")
-            return 0
-        if args.limit:
-            meetings = meetings[:args.limit]
-        print("Found %d Queen Creek meeting(s)" % len(meetings))
-
-        # Map Granicus bodies to our body codes
-        _QC_BODY_MAP = {
-            "town-council": "queen-creek-cc",
-            "planning-and-zoning": "queen-creek-pz",
-            "board-of-adjustment": "queen-creek-boa",
-        }
-
-        session = get_session()
-        meeting_count = len(meetings)
-        for idx, m in enumerate(meetings, 1):
-            meeting_id = m["meeting_id"]
-            meeting_date = m.get("meeting_date", "")
-            body_slug = m.get("body_slug", "town-council")
-            body_code = _QC_BODY_MAP.get(body_slug, "queen-creek-cc")
-            meeting_title = m.get("meeting_title", m.get("body_name", ""))
-            meeting_type = m.get("meeting_type", "")
-            source_url = m.get("source_url", "")
-            agenda_url = m.get("agenda_url", "")
-
-            meeting_dict = {
-                "meeting_id": meeting_id, "meeting_date": meeting_date,
-                "meeting_type": meeting_type, "meeting_title": meeting_title,
-                "source_url": source_url,
-            }
-
-            existing = session.execute(
-                select(MeetingModel).where(
-                    MeetingModel.body == body_code,
-                    MeetingModel.meeting_id == meeting_id,
-                )
-            ).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
-                print(f"  [{idx}/{meeting_count}] {meeting_id} {meeting_date}: already synced (items={existing.item_count_actual})")
-                continue
-
-            # Extract agenda items and supporting docs from the PDF
-            items, docs = [], []
-            if agenda_url:
-                items, docs = extract_meeting_items(agenda_url)
-
-            try:
-                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, list(items), supporting_doc_dicts=list(docs))
-                ts = _dt.datetime.now().strftime("%H:%M:%S")
-                status = "complete" if items else "no_agenda"
-                print(f"{ts} [{idx}/{meeting_count}] {meeting_id} {meeting_date}: {len(items)} items, {len(docs)} docs ({status})")
-                update_sync_status(session, body_code, meeting_id, status)
-                session.commit()
-            except Exception as e:
-                log.error("Failed to sync Queen Creek meeting %s: %s", meeting_id, e)
-                try:
-                    update_sync_status(session, body_code, meeting_id, "failed", error=str(e)[:500])
-                    session.commit()
-                except Exception:
-                    pass
-
-        session.close()
-        print(f"Synced {meeting_count} Queen Creek meeting(s)")
-        return 0
-
-    # ── Fountain Hills sync (CivicClerk) ──
-    if args.source == "fountain-hills" and args.sync:
-        import datetime as _dt
-        from db import get_session, init_db, replace_meeting_data_safe
-        from scraper.platforms.civicclerk import CivicClerkConfig, search_meetings, fetch_meeting_items
-
-        fh_config = CivicClerkConfig(
-            subdomain="fountainhillsaz",
-            body_map={
-                "Town Council": ("fountain-hills-cc", "fountain-hills-cc", "Town Council"),
-                "Planning and Zoning Commission": ("fountain-hills-pz", "fountain-hills-pz", "Planning & Zoning Commission"),
-                "Board of Adjustment": ("fountain-hills-boa", "fountain-hills-boa", "Board of Adjustment"),
-                "Strategic Planning Advisory Commission": ("fountain-hills-spac", "fountain-hills-spac", "Strategic Planning Advisory Commission"),
-                "Community Services Advisory Commission": ("fountain-hills-csac", "fountain-hills-csac", "Community Services Advisory Commission"),
-                "History and Culture Advisory Commission": ("fountain-hills-hcac", "fountain-hills-hcac", "History and Culture Advisory Commission"),
-                "Municipal Property Corporation": ("fountain-hills-mpc", "fountain-hills-mpc", "Municipal Property Corporation"),
-                "Sub-Committee": ("fountain-hills-sub", "fountain-hills-sub", "Sub-Committee"),
-            },
-            default_body="fountain-hills-cc",
-        )
-
-        init_db()
-
-        print("Searching Fountain Hills meetings via CivicClerk API...")
-        meetings = search_meetings(fh_config, start_date="2025-08-01")
-        if not meetings:
-            print("No Fountain Hills meetings found.")
-            return 0
-
-        start_date_str = getattr(args, "start_date", None)
-        end_date_str = getattr(args, "end_date", None)
-        if start_date_str:
-            meetings = [m for m in meetings if m.get("meeting_date", "") >= start_date_str]
-        if end_date_str:
-            meetings = [m for m in meetings if m.get("meeting_date", "") <= end_date_str]
-        if not meetings:
-            print("No Fountain Hills meetings found in date range.")
-            return 0
-        if args.limit:
-            meetings = meetings[:args.limit]
-        print("Found %d Fountain Hills meeting(s)" % len(meetings))
-
-        session = get_session()
-        total_items = 0
-        meeting_count = len(meetings)
-        from db import Meeting as MeetingModel
-        from sqlalchemy import select
-
-        for idx, m in enumerate(meetings, 1):
-            event_id = m.get("event_id")
-            if not event_id:
-                event_id = int(m.get("meeting_id", 0))
-            meeting_date = m.get("meeting_date", "")
-            body_code = m.get("body_code", "fountain-hills-cc")
-            meeting_type = m.get("meeting_type", "")
-            meeting_title = m.get("meeting_title", "")
-            source_url = m.get("source_url", "")
-
-            meeting_dict = {
-                "meeting_id": str(event_id),
-                "meeting_date": meeting_date,
-                "meeting_type": meeting_type,
-                "meeting_title": meeting_title,
-                "source_url": source_url,
-            }
-
-            existing = session.execute(
-                select(MeetingModel).where(
-                    MeetingModel.body == body_code,
-                    MeetingModel.meeting_id == str(event_id),
-                )
-            ).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
-                print("  [%d/%d] %s %s: already synced, %d items" % (idx, meeting_count, event_id, meeting_date, existing.item_count_actual or 0))
-                total_items += existing.item_count_actual or 0
-                continue
-
-            try:
-                # ── Extract agenda items and docs from Meetings API ──
-                items, supp_docs = [], []
-                if event_id:
-                    import urllib.request, json
-                    evt_url = f"{fh_config.api_base}/Events/{event_id}"
-                    evt_req = urllib.request.Request(evt_url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
-                    try:
-                        with urllib.request.urlopen(evt_req, timeout=10) as evt_resp:
-                            evt_data = json.loads(evt_resp.read())
-                        agenda_id = evt_data.get("agendaId", 0)
-                        if agenda_id and agenda_id > 0:
-                            items, supp_docs = fetch_meeting_items(
-                                fh_config, event_id, agenda_id,
-                                body_code, meeting_date,
-                            )
-                    except Exception:
-                        pass
-
-                replace_meeting_data_safe(
-                    session, body_code, str(event_id), meeting_dict,
-                    items, supporting_doc_dicts=supp_docs,
-                )
-                total_items += len(items)
-                doc_summary = f" ({len(supp_docs)} doc(s))" if supp_docs else ""
-                ts = _dt.datetime.now().strftime("%H:%M:%S")
-                print("%s [%d/%d] %s %s: %d items synced%s" % (ts, idx, meeting_count, event_id, meeting_date, len(items), doc_summary))
-            except Exception as e:
-                import logging
-                log = logging.getLogger(__name__)
-                log.error("Failed Fountain Hills meeting %s: %s", event_id, e)
-                import traceback; traceback.print_exc()
-                try:
-                    from db import update_sync_status
-                    update_sync_status(session, body_code, str(event_id), "failed", error=str(e)[:500])
-                    session.commit()
-                except Exception:
-                    pass
-
-        session.close()
-        print("Synced %d Fountain Hills items across %d meeting(s)" % (total_items, meeting_count))
-        return 0
-
-    # ── Apache Junction sync (Legistar) ──
-    if args.source == "apache-junction" and args.sync:
-        import datetime as _dt
-        from db import get_session, init_db, update_sync_status, replace_meeting_data_safe
-        from db import Meeting as MeetingModel
-        from sqlalchemy import select
-
-        init_db()
-
-        from scraper.jurisdictions.apache_junction import search_meetings, fetch_agenda_items, fetch_supporting_docs, DEFAULT_BODY_SLUGS as AJ_DEFAULT_SLUGS
-
-        body_slugs_str = getattr(args, "bodies", None) or ",".join(AJ_DEFAULT_SLUGS)
-        body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
-
-        print("Searching Apache Junction meetings via Legistar...")
-        meetings = search_meetings(body_slugs=body_slugs)
-        if not meetings:
-            print("No Apache Junction meetings found.")
-            return 0
-
-        start_date_str = getattr(args, "start_date", None)
-        end_date_str = getattr(args, "end_date", None)
-        if start_date_str:
-            meetings = [m for m in meetings if m.get("meeting_date", "") >= start_date_str]
-        if end_date_str:
-            meetings = [m for m in meetings if m.get("meeting_date", "") <= end_date_str]
-        if not meetings:
-            print("No Apache Junction meetings found in date range.")
-            return 0
-        if args.limit:
-            meetings = meetings[:args.limit]
-        print("Found %d Apache Junction meeting(s)" % len(meetings))
-
-        session = get_session()
-        meeting_count = len(meetings)
-        for idx, m in enumerate(meetings, 1):
-            meeting_id = m["meeting_id"]
-            meeting_date = m.get("meeting_date", "")
-            body_code = m.get("body_code", "apache-junction-cc")
-            meeting_title = m.get("meeting_title", m.get("body_name", ""))
-
-            meeting_dict = {
-                "meeting_id": meeting_id, "meeting_date": meeting_date,
-                "meeting_type": m.get("meeting_type", ""),
-                "meeting_title": meeting_title,
-                "source_url": m.get("source_url", ""),
-            }
-
-            existing = session.execute(
-                select(MeetingModel).where(
-                    MeetingModel.body == body_code,
-                    MeetingModel.meeting_id == meeting_id,
-                )
-            ).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
-                print(f"  [{idx}/{meeting_count}] {meeting_id} {meeting_date}: already synced (items={existing.item_count_actual})")
-                continue
-
-            # Fetch agenda items from the MeetingDetail page
-            items = []
-            if m.get("detail_url"):
-                items = fetch_agenda_items(m["detail_url"])
-
-            # For each item with a legislation URL, fetch supporting docs
-            # and stamp each doc with the parent item's agenda_item_number
-            # so it appears inline with the correct item on the meeting page.
-            all_docs = []
-            for item in items:
-                item_number = item.get("agenda_item_number", "0")
-                if item.get("agenda_item_url"):
-                    try:
-                        docs = fetch_supporting_docs(item["agenda_item_url"])
-                        for d in docs:
-                            d["agenda_item_number"] = item_number
-                            # (agenda_item_id is an INTEGER FK and will be set by
-                            #  replace_meeting_data_safe after the item is flushed)
-                        all_docs.extend(docs)
-                    except Exception as e:
-                        log.warning("Failed to fetch docs for %s: %s", item["agenda_item_url"], e)
-
-            try:
-                replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, list(items), supporting_doc_dicts=list(all_docs))
-                ts = _dt.datetime.now().strftime("%H:%M:%S")
-                status = "complete" if items else "no_agenda"
-                print(f"{ts} [{idx}/{meeting_count}] {meeting_id} {meeting_date}: {len(items)} items, {len(all_docs)} docs ({status})")
-                update_sync_status(session, body_code, meeting_id, status)
-                session.commit()
-            except Exception as e:
-                log.error("Failed to sync Apache Junction meeting %s: %s", meeting_id, e)
-                try:
-                    update_sync_status(session, body_code, meeting_id, "failed", error=str(e)[:500])
-                    session.commit()
-                except Exception:
-                    pass
-
-        session.close()
-        print(f"Synced {meeting_count} Apache Junction meeting(s)")
-        return 0
+    # Standalone adapters whose ownership has migrated to the source registry.
+    if args.sync:
+        registered_adapter = adapter_for_command(args.source)
+        if registered_adapter is not None:
+            return registered_adapter(args)
 
     if args.source in ("pz", "adj", "drain", "health", "tab", "ida") and args.sync:
         from db import get_session, init_db, replace_meeting_data_safe
