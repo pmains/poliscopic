@@ -4,13 +4,29 @@ import argparse
 import datetime as dt
 import sys
 
-from scraper.common.utils import log
+from scraper.source_registry import cli_body_catalogs, scheduled_cli_commands
+
+
+# Scheduled commands come from the scheduler registry. These additional
+# commands are aliases, manual utilities, or deprecated compatibility entry
+# points that are intentionally not part of daily/weekly execution.
+SOURCE_COMMANDS = scheduled_cli_commands() | {
+    "hearings",
+    "maricopa",
+    "mcacc",
+    "mag",
+    "all",
+    "all-jurisdictions",
+    "avondale-granicus",
+    "buckeye-novusagenda",
+    "wickenburg",
+}
 
 def _print_top_level_help() -> None:
     """Print a comprehensive help message listing all supported boards, then exit."""
     print("usage: scrape_agendas.py <subcommand> [options]")
     print()
-    print("Scrape meeting materials from Maricopa County and City of Tempe public governance boards.")
+    print("Scrape meeting materials from independent Arizona local and regional governments.")
     print()
     print("Subcommands:")
     print("  maricopa  Maricopa County boards: --list-bodies, --body=mc-bos|mc-pz|...")
@@ -21,6 +37,7 @@ def _print_top_level_help() -> None:
     print("  buckeye   City of Buckeye (Council, P&Z, PSPRS, CFD, Youth via Granicus)")
     print("  el-mirage City of El Mirage (Council, P&Z, YAC, PSPRS via AgendaQuick)")
     print("  fountain-hills  Town of Fountain Hills (Council, P&Z, boards via CivicClerk)")
+    print("  litchfield-park  City of Litchfield Park (Council, P&Z, boards via CivicClerk)")
     print("  gilbert   Town of Gilbert (Council + Planning — use --list-bodies, --body)")
     print("  glendale  City of Glendale (Council via Legistar; Planning via AgendaQuick)")
     print("  goodyear  City of Goodyear (Council, P&Z, boards via AgendaQuick)")
@@ -33,9 +50,12 @@ def _print_top_level_help() -> None:
     print("  tolleson  City of Tolleson (City Council, P&Z via CivicClerk)")
     print("  tucson    City of Tucson (Mayor & Council via OnBase; Planning via listing page)")
     print("  wickenburg Town of Wickenburg (Common Council, P&Z, boards via Destiny/AgendaQuick)")
+    print("  youngtown Town of Youngtown (Council, CFD, BOA, PSPRS via Revize)")
+    print("  flagstaff City of Flagstaff (Council and commissions via AgendaQuick)")
+    print("  yuma      City of Yuma (Council and worksessions via Legistar)")
     print("  apache-junction  City of Apache Junction (Council, P&Z, boards via Legistar)")
-    print("  all       Sync ALL jurisdictions (32 cities + county boards via run_pipeline.py)")
-    print("  mag       Maricopa Association of Governments (MAG) committees (via browser)")
+    print("  all       Sync all scheduled government sources via scripts/sync/runner.py")
+    print("  mag       Independent MAG regional-government committees (via browser)")
     print()
     print("Deprecated/Legacy:")
     print("  avondale-granicus   City of Avondale via Granicus (use avondale instead)")
@@ -193,98 +213,7 @@ def _parse_maricopa_args(rest: list[str]) -> argparse.Namespace:
     return args
 
 
-JURISDICTION_BODIES = {
-    "bos": {"bos": "Board of Supervisors"},
-    "pz": {"pz": "Planning & Zoning Commission"},
-    "adj": {"adj": "Board of Adjustment"},
-    "drain": {"drain": "Drainage Review Board (2011\u20132013, defunct)"},
-    "health": {"health": "Board of Health"},
-    "tab": {"tab": "Transportation Advisory Board"},
-    "ida": {"ida": "Industrial Development Authority"},
-    "mcacc": {"mcacc": "All remaining Maricopa County boards via AgendaCenter"},
-    "maricopa": {
-        "mc-bos": "Board of Supervisors",
-        "mc-pz": "Planning & Zoning Commission",
-        "mc-adj": "Board of Adjustment",
-        "mc-drain": "Drainage Review Board (2011\u20132013, defunct)",
-        "mc-health": "Board of Health",
-        "mc-tab": "Transportation Advisory Board",
-        "mc-ida": "Industrial Development Authority",
-        "mc-mcacc": "All remaining boards via AgendaCenter",
-    },
-    "tempe": {
-        "tempe-cc": "City Council",
-        "tempe-drc": "Development Review Commission",
-        "tempe-boa": "Board of Adjustment",
-        "tempe-hpc": "Historic Preservation Commission",
-    },
-    "mesa": {
-        "mesa-city-council": "City Council",
-        "mesa-pz": "Planning & Zoning Board",
-        "mesa-design-review-board": "Development Review Board",
-        "mesa-board-of-adjustment": "Board of Adjustment",
-        "mesa-historic-preservation-board": "Historic Preservation Board",
-    },
-    "chandler": {
-        "chandler-cc": "City Council",
-        "chandler-pz": "Planning & Zoning",
-        "chandler-drc": "Development Review Commission",
-        "chandler-boa": "Board of Adjustment",
-        "chandler-hpc": "Historic Preservation Commission",
-    },
-    "glendale": {
-        "glendale-cc": "City Council (via Legistar)",
-        "glendale-pc": "Planning Commission (via AgendaQuick)",
-        "glendale-boa": "Board of Adjustment",
-    },
-    "scottsdale": {
-        "scottsdale-cc": "City Council (via PDF archive)",
-        "scottsdale-pz": "Planning & Zoning",
-        "scottsdale-boa": "Board of Adjustment",
-        "scottsdale-drb": "Development Review Board",
-        "scottsdale-hpc": "Historic Preservation Commission",
-    },
-    "tucson": {
-        "tucson-cc": "Mayor & Council (via OnBase)",
-        "tucson-pc": "Planning Commission (via listing page + PDF)",
-    },
-    "phoenix": {
-        "phoenix-cc": "City Council (formal, policy, special, work study)",
-        "phoenix-pc": "Planning Commission",
-        "phoenix-cs": "Community Services Subcommittee",
-        "phoenix-ed": "Economic Development Subcommittee",
-        "phoenix-ps": "Public Safety Subcommittee",
-        "phoenix-ti": "Transportation, Infrastructure & Planning Subcommittee",
-        "phoenix-bh": "Budget Hearing",
-    },
-    "phoenix-aem": {
-        "phoenix-village": "Village Planning Committees",
-        "phoenix-planning": "Planning Commission",
-        "phoenix-hpc": "Historic Preservation Commission",
-    },
-    "gilbert": {
-        "gilbert-cc": "Town Council (via OnBase)",
-        "gilbert-planning": "Planning Commission (via CivicPlus)",
-    },
-    "surprise": {
-        "surprise-cc": "City Council",
-        "surprise-pz": "Planning & Zoning",
-        "surprise-boa": "Board of Adjustment",
-    },
-    "buckeye": {
-        "buckeye-cc": "City Council",
-        "buckeye-pz": "Planning & Zoning",
-        "buckeye-boa": "Board of Adjustment",
-        "buckeye-prc": "Parks & Recreation",
-        "buckeye-hpc": "Historic Preservation",
-        "buckeye-lib": "Library Board",
-        "buckeye-psprs": "PSPRS Board",
-        "buckeye-airport": "Airport Advisory",
-        "buckeye-pollution": "Pollution Control",
-        "buckeye-youth": "Youth Council",
-        "buckeye-cfd": "CFD",
-    },
-}
+JURISDICTION_BODIES = cli_body_catalogs()
 
 
 def _print_jurisdiction_bodies(jurisdiction: str) -> None:
@@ -302,16 +231,10 @@ def _print_jurisdiction_bodies(jurisdiction: str) -> None:
 
 def _parse_scottsdale_args(rest: list[str]) -> argparse.Namespace:
     """Parse Scottsdale sync arguments with --body support."""
-    SCOTTSDALE_BODIES = {
-        "scottsdale-cc": "City Council (via PDF archive)",
-        "scottsdale-pz": "Planning & Zoning",
-        "scottsdale-boa": "Board of Adjustment",
-        "scottsdale-drb": "Development Review Board",
-        "scottsdale-hpc": "Historic Preservation Commission",
-    }
+    scottsdale_bodies = JURISDICTION_BODIES["scottsdale"]
     p = argparse.ArgumentParser(description="Scrape Scottsdale meetings", prog="scottsdale")
     p.add_argument("--sync", action="store_true")
-    p.add_argument("--body", default="scottsdale-cc", choices=list(SCOTTSDALE_BODIES.keys()),
+    p.add_argument("--body", default="scottsdale-cc", choices=list(scottsdale_bodies),
                    help="Board to sync (default: scottsdale-cc)")
     p.add_argument("--list-bodies", action="store_true")
     p.add_argument("--start-date", help="Start date YYYY-MM-DD")
@@ -335,7 +258,7 @@ def _parse_scottsdale_args(rest: list[str]) -> argparse.Namespace:
 
     if args.list_bodies:
         print("Scottsdale boards:")
-        for code, desc in SCOTTSDALE_BODIES.items():
+        for code, desc in scottsdale_bodies.items():
             print(f"  {code:<20} {desc}")
         raise SystemExit(0)
 
@@ -354,13 +277,10 @@ def _parse_scottsdale_args(rest: list[str]) -> argparse.Namespace:
 
 def _parse_gilbert_args(rest: list[str]) -> argparse.Namespace:
     """Parse Gilbert sync arguments with --body support."""
-    GILBERT_BODIES = {
-        "gilbert-cc": "Town Council (via OnBase)",
-        "gilbert-planning": "Planning Commission (via CivicPlus)",
-    }
+    gilbert_bodies = JURISDICTION_BODIES["gilbert"]
     p = argparse.ArgumentParser(description="Scrape Gilbert meetings", prog="gilbert")
     p.add_argument("--sync", action="store_true")
-    p.add_argument("--body", default="gilbert-cc", choices=list(GILBERT_BODIES.keys()),
+    p.add_argument("--body", default="gilbert-cc", choices=list(gilbert_bodies),
                    help="Board to sync (default: gilbert-cc)")
     p.add_argument("--list-bodies", action="store_true")
     p.add_argument("--start-date", help="Start date YYYY-MM-DD")
@@ -382,7 +302,7 @@ def _parse_gilbert_args(rest: list[str]) -> argparse.Namespace:
 
     if args.list_bodies:
         print("Gilbert boards:")
-        for code, desc in GILBERT_BODIES.items():
+        for code, desc in gilbert_bodies.items():
             print(f"  {code:<20} {desc}")
         raise SystemExit(0)
 
@@ -425,7 +345,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     if rest and rest[0] in ("-h", "--help"):
         _print_top_level_help()
 
-    if rest and rest[0] in ("hearings", "maricopa", "bos", "pz", "adj", "drain", "health", "tab", "ida", "tempe", "mesa", "chandler", "gilbert", "gilbert-planning", "scottsdale", "scottsdale-boards", "glendale", "glendale-new", "peoria", "surprise", "surprise-civicclerk", "avondale", "avondale-granicus", "buckeye", "buckeye-novusagenda", "goodyear", "el-mirage", "wickenburg", "paradise-valley", "queen-creek", "fountain-hills", "apache-junction", "mcacc", "mag", "phoenix", "phoenix-rss", "phoenix-aem", "phoenix-aem-results", "phoenix-planning", "tempe-subcommittees", "tolleson", "tucson", "tucson-pc", "valley-metro", "all", "all-jurisdictions"):
+    if rest and rest[0] in SOURCE_COMMANDS:
         source = rest.pop(0)
 
     if source == "valley-metro":
@@ -482,6 +402,10 @@ def parse_args(argv=None) -> argparse.Namespace:
         args = _parse_mesa_args(rest)
     elif source == "wickenburg":
         args = _parse_mesa_args(rest)
+    elif source == "youngtown":
+        args = _parse_mesa_args(rest)
+    elif source in ("flagstaff", "yuma"):
+        args = _parse_mesa_args(rest)
     elif source == "el-mirage":
         args = _parse_mesa_args(rest)
     elif source == "avondale":
@@ -500,6 +424,8 @@ def parse_args(argv=None) -> argparse.Namespace:
         args = _parse_mesa_args(rest)
     elif source == "fountain-hills":
         args = _parse_mesa_args(rest)
+    elif source == "litchfield-park":
+        args = _parse_surprise_args(rest, jurisdiction="litchfield-park")
     elif source == "apache-junction":
         args = _parse_mesa_args(rest)
     elif source == "tempe-subcommittees":
@@ -864,7 +790,7 @@ def _parse_tempe_args(rest: list[str]) -> argparse.Namespace:
 
 def _parse_mcacc_args(rest: list[str]) -> argparse.Namespace:
     """Parse MCACC (Maricopa County AgendaCenter boards) arguments."""
-    from scraper.platforms.agendacenter import MCACC_BODY_CODES, body_code_to_name
+    from scraper.platforms.agendacenter import MCACC_BODY_CODES
     default_bodies = ",".join(MCACC_BODY_CODES)
     p = argparse.ArgumentParser(
         description="Scrape Maricopa County AgendaCenter boards (mcacc)",
@@ -980,11 +906,13 @@ def _parse_mesa_args(rest: list[str]) -> argparse.Namespace:
     return args
 
 
-def _parse_surprise_args(rest: list[str]) -> argparse.Namespace:
+def _parse_surprise_args(
+    rest: list[str], *, jurisdiction: str = "surprise"
+) -> argparse.Namespace:
     """Parse Surprise City Council / body arguments."""
     p = argparse.ArgumentParser(
-        description="Scrape City of Surprise public meeting materials (via CivicClerk)",
-        prog="surprise",
+        description=f"Scrape {jurisdiction.replace('-', ' ').title()} public meeting materials (via CivicClerk)",
+        prog=jurisdiction,
     )
     p.add_argument("--start-date", help="Start date in YYYY-MM-DD")
     p.add_argument("--end-date", help="End date in YYYY-MM-DD")
@@ -1135,4 +1063,3 @@ def _parse_all_jurisdictions_args(rest: list[str]) -> argparse.Namespace:
 
 def parse_date(value: str) -> dt.date:
     return dt.date.fromisoformat(value)
-

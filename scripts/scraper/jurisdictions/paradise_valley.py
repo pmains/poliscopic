@@ -8,11 +8,9 @@ from __future__ import annotations
 import logging
 import re
 import xml.etree.ElementTree as ET
-from datetime import datetime
 from typing import Optional
 
 import urllib.request
-import urllib.parse
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +60,6 @@ def search_meetings() -> list[dict]:
     except ET.ParseError:
         return []
 
-    ns = {"": "http://www.w3.org/2005/Atom"}
     for item in root.iter("item"):
         title_el = item.find("title")
         desc_el = item.find("description")
@@ -78,8 +75,6 @@ def search_meetings() -> list[dict]:
         meeting_id_str = clip_match.group(1) if clip_match else (event_match.group(1) if event_match else None)
         if not meeting_id_str:
             continue
-        meeting_id_int = int(meeting_id_str)
-
         date_match = re.search(r"(\d{4}-\d{2}-\d{2})", title)
         meeting_date = date_match.group(1) if date_match else ""
 
@@ -104,3 +99,93 @@ def search_meetings() -> list[dict]:
         })
 
     return meetings
+
+
+def sync(args) -> int:
+    """Search and persist Paradise Valley meeting metadata."""
+    from sqlalchemy import select
+
+    from db import Meeting, get_session, init_db, replace_meeting_data_safe, update_sync_status
+
+    init_db()
+    print("Searching Paradise Valley meetings via Granicus RSS...")
+    meetings = search_meetings()
+    if not meetings:
+        print("No Paradise Valley meetings found.")
+        return 0
+
+    start_date = getattr(args, "start_date", None)
+    end_date = getattr(args, "end_date", None)
+    if start_date:
+        meetings = [m for m in meetings if m.get("meeting_date", "") >= start_date]
+    if end_date:
+        meetings = [m for m in meetings if m.get("meeting_date", "") <= end_date]
+    if not meetings:
+        print("No Paradise Valley meetings found in date range.")
+        return 0
+    if getattr(args, "limit", None):
+        meetings = meetings[: args.limit]
+    print(f"Found {len(meetings)} Paradise Valley meeting(s)")
+
+    session = get_session()
+    try:
+        for index, meeting in enumerate(meetings, 1):
+            meeting_id = meeting["meeting_id"]
+            meeting_date = meeting.get("meeting_date", "")
+            body_code = meeting.get("body_code", "paradise-valley-cc")
+            meeting_dict = {
+                "meeting_id": meeting_id,
+                "meeting_date": meeting_date,
+                "meeting_type": meeting.get("meeting_type", ""),
+                "meeting_title": meeting.get(
+                    "meeting_title", meeting.get("body_name", "")
+                ),
+                "source_url": meeting.get("source_url", ""),
+            }
+            existing = session.execute(
+                select(Meeting).where(
+                    Meeting.body == body_code,
+                    Meeting.meeting_id == meeting_id,
+                )
+            ).scalar_one_or_none()
+            if (
+                existing
+                and existing.sync_status == "complete"
+                and (existing.item_count_actual or 0) > 0
+                and not getattr(args, "force", False)
+            ):
+                print(
+                    f"  [{index}/{len(meetings)}] {meeting_id} {meeting_date}: "
+                    "already synced"
+                )
+                continue
+
+            try:
+                replace_meeting_data_safe(
+                    session, body_code, meeting_id, meeting_dict, []
+                )
+                print(
+                    f"  [{index}/{len(meetings)}] {meeting_id} {meeting_date}: "
+                    "meeting metadata synced"
+                )
+                update_sync_status(session, body_code, meeting_id, "no_agenda")
+                session.commit()
+            except Exception as exc:
+                session.rollback()
+                log.exception("Failed to sync Paradise Valley meeting %s", meeting_id)
+                try:
+                    update_sync_status(
+                        session,
+                        body_code,
+                        meeting_id,
+                        "failed",
+                        error=str(exc)[:500],
+                    )
+                    session.commit()
+                except Exception:
+                    session.rollback()
+    finally:
+        session.close()
+
+    print(f"Synced {len(meetings)} Paradise Valley meeting(s)")
+    return 0

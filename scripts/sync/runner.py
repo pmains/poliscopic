@@ -7,9 +7,9 @@ DB health check, per-jurisdiction subprocess sync, post-sync tasks,
 and state tracking.
 
 Usage (called by pipeline.sh, not directly):
-  python3 scripts/sync/runner.py --tier daily    # 3-day window
-  python3 scripts/sync/runner.py --tier weekly   # 30-day window
-  python3 scripts/sync/runner.py --dry-run       # Print plan only
+  PYTHONPATH=scripts python3 scripts/sync/runner.py --tier daily   # 3-day window
+  PYTHONPATH=scripts python3 scripts/sync/runner.py --tier weekly  # 30-day window
+  PYTHONPATH=scripts python3 scripts/sync/runner.py --dry-run      # Plan only
 """
 
 from __future__ import annotations
@@ -24,6 +24,13 @@ import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
+
+from scraper.source_registry import (
+    no_date_commands,
+    schedule_group,
+    scheduled_commands,
+    source_by_command,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,92 +52,13 @@ FUTURE_WINDOW_FORWARD = 14
 # ── Per-jurisdiction timeout (seconds) ──
 JURISDICTION_TIMEOUT = 120
 
-# ── Group definitions ──
-# Each entry: (jurisdiction_name, extra_args_list)
-# extra_args are appended to the subprocess call (e.g. --bodies=...)
-
-GROUP_A: list[tuple[str, list[str]]] = [
-    ("bos", []),
-    ("pz", []),
-    ("adj", []),
-    ("health", []),
-    ("drain", []),
-    ("tab", []),
-    ("valley-metro", []),
-    # tempe-subcommittees uses its own args parser, doesn't accept date args
-    ("tempe-subcommittees", []),
-]
-
-GROUP_B: list[tuple[str, list[str]]] = [
-    ("chandler", []),
-    ("tempe", []),
-    ("mesa", []),
-    ("scottsdale", []),
-    ("glendale-new", ["--bodies=glendale-city-council,glendale-planning-commission"]),
-    ("goodyear", []),
-    ("gilbert", []),
-    ("surprise-civicclerk", [
-        "--bodies=surprise-pz,surprise-arts,surprise-veterans,surprise-library,"
-        "surprise-parks,surprise-psprs-fire,surprise-psprs-police,"
-        "surprise-health-benefits,surprise-nominations,surprise-audit,"
-        "surprise-tourism,surprise-judicial-selection"
-    ]),
-    # Legacy scrapers (may be superseded by -new/-civicclerk, kept for safety)
-    ("glendale", []),
-    ("surprise", []),
-]
-
-GROUP_C: list[tuple[str, list[str]]] = [
-    ("phoenix-rss", []),
-    ("phoenix-aem", []),
-    ("phoenix-planning", []),
-    ("phoenix-aem-results", []),
-    ("avondale", []),
-    ("tolleson", []),
-    ("fountain-hills", []),
-    ("tucson", []),
-    ("peoria", []),
-    ("buckeye-granicus", []),
-]
-
-GROUP_D: list[tuple[str, list[str]]] = [
-    ("el-mirage", []),
-    ("paradise-valley", []),
-    ("queen-creek", []),
-    ("apache-junction", []),
-    ("gilbert-planning", []),
-    ("scottsdale-boards", []),
-    ("tucson-pc", []),
-    ("ida", []),
-]
-
-# ── Goodyear weekly extra bodies (only for --tier=weekly) ──
-GOODYEAR_WEEKLY_BODIES = [
-    "--bodies=goodyear-city-council,goodyear-planning-zoning-commission,"
-    "goodyear-arts-culture-commission,goodyear-youth-commission,"
-    "goodyear-water-advisory,goodyear-fire-psprs,goodyear-police-psprs,"
-    "goodyear-joint-psprs,goodyear-psprs,goodyear-audit-committee,"
-    "goodyear-notice-of-quorum,goodyear-ida,goodyear-parks,goodyear-boa,"
-    "goodyear-cfd,goodyear-healthcare-trust,goodyear-firefighter-retirement,"
-    "goodyear-public-art"
-]
-
-# ── ALL jurisdictions from run_pipeline.py for coverage verification ──
-ALL_TIER_JURISDICTIONS = {
-    # Tier 1
-    "chandler", "tempe", "tempe-subcommittees",
-    # Tier 2
-    "bos", "pz", "adj", "health", "drain", "tab", "ida",
-    "mesa", "phoenix-rss", "phoenix-aem", "phoenix-aem-results", "phoenix-planning", "scottsdale", "scottsdale-boards",
-    "glendale", "glendale-new", "peoria", "surprise", "surprise-civicclerk",
-    "gilbert", "gilbert-planning", "tucson", "tucson-pc", "avondale",
-    "goodyear", "el-mirage", "paradise-valley", "fountain-hills",
-    "queen-creek", "apache-junction", "tolleson", "buckeye-granicus",
-    "valley-metro",
-}
-
-# ── Jurisdictions that don't accept --start-date/--end-date ──
-NO_DATE_ARGS = {"tempe-subcommittees", "phoenix-planning", "phoenix-aem-results"}
+# Compatibility views for runner callers; the registry is authoritative.
+GROUP_A = schedule_group("A", "daily")
+GROUP_B = schedule_group("B", "daily")
+GROUP_C = schedule_group("C", "daily")
+GROUP_D = schedule_group("D", "daily")
+ALL_TIER_JURISDICTIONS = scheduled_commands()
+NO_DATE_ARGS = no_date_commands()
 
 
 # ── Helpers ──
@@ -238,13 +166,14 @@ def _build_cmd(
     tier: str,
 ) -> list[str]:
     """Build the subprocess command for a jurisdiction sync."""
+    source = source_by_command(juris)
     cmd = [
         sys.executable,
         "scripts/scraper/main.py",
-        juris,
-        "--sync",
+        source.invocation_command,
+        *source.action_args,
     ]
-    if juris not in NO_DATE_ARGS:
+    if source.accepts_date_range:
         cmd.append(f"--start-date={start_date}")
         cmd.append(f"--end-date={end_date}")
     cmd.extend(extra_args)
@@ -347,7 +276,7 @@ def _print_plan(tier: str) -> None:
 
     print()
     print("--- Group B (HTTP batch, up to 8 workers) ---")
-    for juris, extra in GROUP_B:
+    for juris, extra in schedule_group("B", tier):
         cmd = _build_cmd(juris, extra, start_date, end_date, tier)
         print(f"  {' '.join(cmd)}")
 
@@ -590,13 +519,7 @@ def main():
     # ── Step 3: Group B (HTTP batch) ──
     log.info("--- Group B (HTTP batch, %d jurisdiction(s)) ---",
              len(GROUP_B))
-    # goodyear: use extra bodies for weekly tier
-    group_b = []
-    for juris, extra in GROUP_B:
-        if juris == "goodyear" and args.tier == "weekly":
-            group_b.append((juris, GOODYEAR_WEEKLY_BODIES))
-        else:
-            group_b.append((juris, extra))
+    group_b = schedule_group("B", args.tier)
     run_group_parallel(group_b, start_date, end_date, args.tier, state)
 
     # ── Step 4: Group C (HTTP batch) ──

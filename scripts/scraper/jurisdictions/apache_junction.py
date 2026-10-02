@@ -9,10 +9,11 @@ Legislation detail: LegislationDetail.aspx?ID=...
 """
 
 from __future__ import annotations
+
+from datetime import datetime
 import logging
 import re
 import urllib.parse
-from typing import Optional
 
 from scraper.common.html_utils import _parse_html, _find_all, _clean_html_text, _node_text
 from scraper.common.io_utils import normalize_meeting_date
@@ -234,3 +235,130 @@ def fetch_agenda_items(detail_url: str) -> list[dict]:
 def fetch_supporting_docs(legislation_url: str) -> list[dict]:
     html = fetch_page(legislation_url)
     return parse_legislation_detail_from_html(html)
+
+
+def sync(args) -> int:
+    """Search, extract, and persist Apache Junction meetings."""
+    from sqlalchemy import select
+
+    from db import (
+        Meeting,
+        get_session,
+        init_db,
+        replace_meeting_data_safe,
+        update_sync_status,
+    )
+
+    init_db()
+    requested_bodies = getattr(args, "bodies", None) or ",".join(DEFAULT_BODY_SLUGS)
+    body_slugs = [value.strip() for value in requested_bodies.split(",") if value.strip()]
+
+    print("Searching Apache Junction meetings via Legistar...")
+    meetings = search_meetings(body_slugs=body_slugs)
+    if not meetings:
+        print("No Apache Junction meetings found.")
+        return 0
+
+    start_date = getattr(args, "start_date", None)
+    end_date = getattr(args, "end_date", None)
+    if start_date:
+        meetings = [m for m in meetings if m.get("meeting_date", "") >= start_date]
+    if end_date:
+        meetings = [m for m in meetings if m.get("meeting_date", "") <= end_date]
+    if not meetings:
+        print("No Apache Junction meetings found in date range.")
+        return 0
+    if getattr(args, "limit", None):
+        meetings = meetings[: args.limit]
+    print(f"Found {len(meetings)} Apache Junction meeting(s)")
+
+    session = get_session()
+    try:
+        for index, meeting in enumerate(meetings, 1):
+            meeting_id = meeting["meeting_id"]
+            meeting_date = meeting.get("meeting_date", "")
+            body_code = meeting.get("body_code", "apache-junction-cc")
+            meeting_dict = {
+                "meeting_id": meeting_id,
+                "meeting_date": meeting_date,
+                "meeting_type": meeting.get("meeting_type", ""),
+                "meeting_title": meeting.get(
+                    "meeting_title", meeting.get("body_name", "")
+                ),
+                "source_url": meeting.get("source_url", ""),
+            }
+
+            existing = session.execute(
+                select(Meeting).where(
+                    Meeting.body == body_code,
+                    Meeting.meeting_id == meeting_id,
+                )
+            ).scalar_one_or_none()
+            if (
+                existing
+                and existing.sync_status == "complete"
+                and (existing.item_count_actual or 0) > 0
+                and not getattr(args, "force", False)
+            ):
+                print(
+                    f"  [{index}/{len(meetings)}] {meeting_id} {meeting_date}: "
+                    f"already synced (items={existing.item_count_actual})"
+                )
+                continue
+
+            items = (
+                fetch_agenda_items(meeting["detail_url"])
+                if meeting.get("detail_url")
+                else []
+            )
+            documents: list[dict] = []
+            for item in items:
+                item_url = item.get("agenda_item_url")
+                if not item_url:
+                    continue
+                try:
+                    item_documents = fetch_supporting_docs(item_url)
+                    for document in item_documents:
+                        document["agenda_item_number"] = item.get(
+                            "agenda_item_number", "0"
+                        )
+                    documents.extend(item_documents)
+                except Exception as exc:
+                    log.warning("Failed to fetch docs for %s: %s", item_url, exc)
+
+            try:
+                replace_meeting_data_safe(
+                    session,
+                    body_code,
+                    meeting_id,
+                    meeting_dict,
+                    list(items),
+                    supporting_doc_dicts=list(documents),
+                )
+                status = "complete" if items else "no_agenda"
+                print(
+                    f"{datetime.now():%H:%M:%S} [{index}/{len(meetings)}] "
+                    f"{meeting_id} {meeting_date}: {len(items)} items, "
+                    f"{len(documents)} docs ({status})"
+                )
+                update_sync_status(session, body_code, meeting_id, status)
+                session.commit()
+            except Exception as exc:
+                session.rollback()
+                log.exception("Failed to sync Apache Junction meeting %s", meeting_id)
+                try:
+                    update_sync_status(
+                        session,
+                        body_code,
+                        meeting_id,
+                        "failed",
+                        error=str(exc)[:500],
+                    )
+                    session.commit()
+                except Exception:
+                    session.rollback()
+    finally:
+        session.close()
+
+    print(f"Synced {len(meetings)} Apache Junction meeting(s)")
+    return 0
