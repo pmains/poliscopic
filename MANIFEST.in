@@ -1,0 +1,4 @@
+# Phase 4 publishes only the installable library slice. Repository tests and
+# operational/runtime trees are not package payloads.
+prune tests
+global-exclude __pycache__ *.py[cod]

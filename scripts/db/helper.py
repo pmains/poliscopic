@@ -1,18 +1,14 @@
-"""helper module."""
+"""Compatibility alias for :mod:`poliscopic.db.helper`."""
 
-from datetime import date
-from typing import Optional
+from __future__ import annotations
 
-def _parse_date(val) -> Optional[date]:
-    """Parse a value into a date, handling SQLite string returns."""
-    if val is None:
-        return None
-    if isinstance(val, date):
-        return val
-    if isinstance(val, str):
-        try:
-            return date.fromisoformat(val)
-        except (ValueError, TypeError):
-            return None
-    return None
+import sys
+from pathlib import Path
 
+_src = Path(__file__).resolve().parents[2] / "src"
+if str(_src) not in sys.path:
+    sys.path.insert(0, str(_src))
+
+from poliscopic.db import helper as _canonical  # noqa: E402
+
+sys.modules[__name__] = _canonical

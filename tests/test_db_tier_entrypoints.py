@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import stat
+from pathlib import Path
 
 import pytest
 
@@ -22,7 +23,6 @@ from db.tier import (
     DEVELOPMENT,
     LOCAL,
     PRODUCTION,
-    PRODUCTION_LIKE,
     TIER_ENV,
     TierError,
     classify_target,
@@ -265,14 +265,15 @@ def test_no_migrated_module_defines_its_own_target_classification():
 
 def test_the_production_markers_live_in_exactly_one_module():
     offenders = []
-    for root, _dirs, files in os.walk("scripts"):
-        for name in files:
-            if not name.endswith(".py"):
-                continue
-            path = os.path.join(root, name)
-            if "ondigitalocean.com" in open(path, encoding="utf-8").read():
-                offenders.append(path)
-    assert offenders == ["scripts/db/tier.py"]
+    for search_root in ("scripts", "src"):
+        for root, _dirs, files in os.walk(search_root):
+            for name in files:
+                if not name.endswith(".py"):
+                    continue
+                path = os.path.join(root, name)
+                if "ondigitalocean.com" in open(path, encoding="utf-8").read():
+                    offenders.append(path)
+    assert offenders == ["src/poliscopic/db/tier.py"]
 
 
 # -- development-only tools ---------------------------------------------------
@@ -292,7 +293,9 @@ def test_benchmark_validates_the_development_role():
 
 def test_rescrape_module_imports_without_network_or_browser():
     """Importing the script must not launch a browser or resolve a database."""
-    assert rescrape_tempe_boa.PROJECT_ROOT.name == "poliscopic"
+    assert rescrape_tempe_boa.PROJECT_ROOT == Path(
+        rescrape_tempe_boa.__file__
+    ).resolve().parents[1]
 
 
 def test_benchmark_module_imports_without_network():
