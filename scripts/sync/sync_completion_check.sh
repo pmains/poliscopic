@@ -78,6 +78,22 @@ case "$SCRAPE_STATUS" in
     *) fail "scrape: summary completion_status=${SCRAPE_STATUS}" ;;
 esac
 
+# A nominal completion status is not sufficient when the DB measurements were
+# unavailable or malformed.  Every required pre/post metric must be a concrete
+# non-negative integer, and the summary must explicitly say its metrics are ok.
+METRICS_STATUS="$(grep -oE '^metrics_status: .*' "$SUMMARY" 2>/dev/null | head -1 | sed 's/^metrics_status: //')"
+[ "$METRICS_STATUS" = "ok" ] || \
+    fail "scrape: metrics_status=${METRICS_STATUS:-missing}"
+for METRIC in pre_total_meetings pre_completed pre_failed pre_pending \
+              pre_recent_24h_syncs pre_total_items post_total_meetings \
+              post_completed post_failed post_pending post_recent_24h_syncs \
+              post_total_items; do
+    VALUE="$(grep -E "^${METRIC}: " "$SUMMARY" 2>/dev/null | head -1 | sed "s/^${METRIC}: //")"
+    case "$VALUE" in
+        ''|*[!0-9]*) fail "scrape: required metric ${METRIC} is not numeric (${VALUE:-missing})" ;;
+    esac
+done
+
 # ── Level 2: post-scrape entity gate (same date / run lineage) ───────────
 [ -f "$ENTITY_STATE" ] || \
     fail "full pipeline: no entity run state for ${DATE} (scrape ok; ${ENTITY_STATE})"

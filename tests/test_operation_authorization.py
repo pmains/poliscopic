@@ -338,6 +338,87 @@ def test_every_allowance_appends_a_receipt(sandbox):
     assert oa.count_uses(OID) == 2
 
 
+def test_terminal_accounting_does_not_consume_at_allowance(sandbox):
+    plan = _plan()
+    oa.write_plan(plan)
+    oa.record_authorization(
+        plan, verbatim_approval="I approve this operation.", author="Pete",
+        mode="standing", max_uses=3, use_accounting="successful-terminal")
+
+    verdict = oa.validate(
+        OP, entry_point=ENTRY, scope=SCOPE, mode="upsert",
+        attempt_id="daily-2026-10-03")
+
+    assert verdict["status"] == "ALLOWED"
+    assert verdict["use_accounting"] == "successful-terminal"
+    assert oa.count_uses(OID) == 0
+
+
+def test_terminal_accounting_requires_attempt_id(sandbox):
+    plan = _plan()
+    oa.write_plan(plan)
+    oa.record_authorization(
+        plan, verbatim_approval="I approve this operation.", author="Pete",
+        mode="standing", max_uses=3, use_accounting="successful-terminal")
+
+    verdict = _validate()
+
+    assert verdict["status"] == "REFUSED"
+    assert verdict["code"] == oa.ATTEMPT_ID_MISSING
+
+
+def test_only_successful_digest_bound_terminal_consumes_deferred_use(sandbox):
+    plan = _plan()
+    oa.write_plan(plan)
+    auth_path = oa.record_authorization(
+        plan, verbatim_approval="I approve this operation.", author="Pete",
+        mode="standing", max_uses=3, use_accounting="successful-terminal")
+    auth = json.loads(auth_path.read_text())
+    body = {
+        "terminal": True,
+        "status": "succeeded",
+        "reconciled": True,
+        "operation": OP,
+        "operation_id": OID,
+        "attempt_id": "daily-2026-10-03",
+        "plan_digest": plan["digest"],
+        "authorization_digest": auth["auth_digest"],
+    }
+    terminal = {**body, "digest": oa.hashlib.sha256(
+        oa.canonical_json(body).encode("utf-8")).hexdigest()}
+
+    path = oa.consume_successful_terminal(OID, terminal)
+
+    assert path.is_file()
+    assert oa.count_uses(OID) == 1
+    with pytest.raises(FileExistsError):
+        oa.consume_successful_terminal(OID, terminal)
+
+
+@pytest.mark.parametrize("status,reconciled", [
+    ("failed", True), ("refused", True), ("succeeded", False),
+])
+def test_failed_or_unreconciled_terminal_never_consumes(sandbox, status, reconciled):
+    plan = _plan()
+    oa.write_plan(plan)
+    auth_path = oa.record_authorization(
+        plan, verbatim_approval="I approve this operation.", author="Pete",
+        mode="standing", max_uses=3, use_accounting="successful-terminal")
+    auth = json.loads(auth_path.read_text())
+    body = {
+        "terminal": True, "status": status, "reconciled": reconciled,
+        "operation": OP, "operation_id": OID,
+        "attempt_id": "daily-2026-10-03", "plan_digest": plan["digest"],
+        "authorization_digest": auth["auth_digest"],
+    }
+    terminal = {**body, "digest": oa.hashlib.sha256(
+        oa.canonical_json(body).encode("utf-8")).hexdigest()}
+
+    with pytest.raises(ValueError):
+        oa.consume_successful_terminal(OID, terminal)
+    assert oa.count_uses(OID) == 0
+
+
 def test_scope_order_does_not_matter(sandbox):
     plan = _plan(scope=["tags", "articles"])
     oa.write_plan(plan)
@@ -398,6 +479,44 @@ def test_interlock_allows_with_valid_authorization(sandbox):
     verdict = interlock.check(OP, entry_point=ENTRY, scope=SCOPE, mode="upsert")
     assert verdict["status"] == "ALLOWED"
     assert verdict["authorization_issuance"] == "validated"
+
+
+def test_terminal_accounted_interlock_refuses_without_daily_evidence(sandbox):
+    plan = _plan()
+    oa.write_plan(plan)
+    oa.record_authorization(
+        plan, verbatim_approval="I approve this operation.", author="Pete",
+        mode="standing", max_uses=3, use_accounting="successful-terminal")
+
+    verdict = interlock.check(
+        OP, entry_point=ENTRY, scope=SCOPE, mode="upsert",
+        attempt_id="daily-2026-10-03")
+
+    assert verdict["status"] == "REFUSED"
+    assert verdict["code"] in {"COMPLETION_INCOMPLETE", "DAILY_GATE_UNAVAILABLE"}
+
+
+def test_terminal_accounted_interlock_allows_only_after_daily_gate(sandbox, monkeypatch):
+    plan = _plan()
+    oa.write_plan(plan)
+    oa.record_authorization(
+        plan, verbatim_approval="I approve this operation.", author="Pete",
+        mode="standing", max_uses=3, use_accounting="successful-terminal")
+    import daily_sync_gate
+    monkeypatch.setattr(daily_sync_gate, "validate_pre_sync", lambda **_: {
+        "status": "ALLOWED", "code": None, "backup_digest": "b" * 64,
+        "preflight_digest": "p" * 64,
+    })
+
+    verdict = interlock.check(
+        OP, entry_point=ENTRY, scope=SCOPE, mode="upsert",
+        authorization_id=OID, attempt_id="daily-2026-10-03",
+        run_date="2026-10-03", preflight_path="preflight.json",
+        backup_receipt_path="backup.json")
+
+    assert verdict["status"] == "ALLOWED"
+    assert verdict["daily_gate"]["backup_digest"] == "b" * 64
+    assert oa.count_uses(OID) == 0
 
 
 def test_interlock_still_allows_read_only(sandbox):

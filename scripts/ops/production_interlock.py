@@ -228,7 +228,11 @@ def operation_id() -> str | None:
 def check(operation: str, entry_point: str = "", scope: list[str] | None = None,
           target: str = "production", now: datetime | None = None,
           mode: str | None = None,
-          authorization_id: str | None = None) -> dict:
+          authorization_id: str | None = None,
+          attempt_id: str | None = None,
+          run_date: str | None = None,
+          preflight_path: str | None = None,
+          backup_receipt_path: str | None = None) -> dict:
     """Return the interlock decision for one operation request.
 
     Fails closed. Order of evaluation matters: an attempted bypass is reported
@@ -330,7 +334,7 @@ def check(operation: str, entry_point: str = "", scope: list[str] | None = None,
 
     authorization = _validate_authorization(
         operation, entry_point=entry_point, scope=scope, target=target, now=now,
-        mode=mode, operation_id=authorization_id,
+        mode=mode, operation_id=authorization_id, attempt_id=attempt_id,
     )
     if authorization.get("status") != "ALLOWED":
         verdict.update({
@@ -344,6 +348,31 @@ def check(operation: str, entry_point: str = "", scope: list[str] | None = None,
                        "absence of a hold is never authorization either"),
         })
         return verdict
+
+    # Terminal-accounted daily authority is valid only inside the full guarded
+    # lane.  A direct sync_prod.py invocation with merely an attempt id must not
+    # bypass scrape completion, fresh preflight, or restore-verified backup.
+    if authorization.get("use_accounting") == "successful-terminal":
+        try:
+            from daily_sync_gate import validate_pre_sync
+            gate = validate_pre_sync(
+                run_date=str(run_date or ""), attempt_id=str(attempt_id or ""),
+                authorization_id=str(authorization_id or ""),
+                preflight_path=Path(str(preflight_path or "")),
+                backup_receipt_path=Path(str(backup_receipt_path or "")),
+                now=now,
+            )
+        except Exception as exc:
+            gate = {"status": "REFUSED", "code": "DAILY_GATE_UNAVAILABLE",
+                    "reason": f"daily gate could not be evaluated: {type(exc).__name__}"}
+        if gate.get("status") != "ALLOWED":
+            verdict.update({
+                "status": "REFUSED", "code": gate.get("code") or "DAILY_GATE_REFUSED",
+                "reason": gate.get("reason"), "mutates_production": True,
+                "authorization": authorization, "daily_gate": gate,
+            })
+            return verdict
+        verdict["daily_gate"] = gate
 
     verdict.update({
         "status": "ALLOWED",
@@ -395,6 +424,11 @@ def main(argv: list[str] | None = None) -> int:
     p_check.add_argument("--authorization-id", default=None,
                          help="select one exact authorization artifact; managed "
                               "production jobs should always provide this")
+    p_check.add_argument("--attempt-id", default=None,
+                         help="stable id for terminal-accounted authorization use")
+    p_check.add_argument("--run-date", default=None)
+    p_check.add_argument("--preflight", default=None)
+    p_check.add_argument("--backup-receipt", default=None)
 
     p_class = sub.add_parser("classify", help="classify an operation kind")
     p_class.add_argument("--operation", required=True)
@@ -412,7 +446,10 @@ def main(argv: list[str] | None = None) -> int:
         scope = [s.strip() for s in args.scope.split(",") if s.strip()] or None
         verdict = check(args.operation, entry_point=args.entry_point,
                         scope=scope, target=args.target, mode=args.mode,
-                        authorization_id=args.authorization_id)
+                        authorization_id=args.authorization_id,
+                        attempt_id=args.attempt_id, run_date=args.run_date,
+                        preflight_path=args.preflight,
+                        backup_receipt_path=args.backup_receipt)
         _emit(verdict, as_json=not args.human)
         return _exit_code(verdict)
 

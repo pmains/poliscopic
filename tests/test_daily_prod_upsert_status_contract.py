@@ -6,7 +6,8 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts/sync/daily_prod_upsert_s
 
 def test_status_requires_success_terminal_and_live_http_checks():
     text = SCRIPT.read_text()
-    assert '"status":"success"' in text
+    assert "daily_sync_terminal.py" in text
+    assert "--check-existing" in text
     assert "homepage_http" in text
     assert "tempe_1964_http" in text
     assert 'HOME_CODE" = "200"' in text

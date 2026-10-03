@@ -18,11 +18,18 @@ esac
 SYNC_DIR="$ROOT/data/sync"
 TERMINAL="$SYNC_DIR/prod-upsert-${RUN_DATE}.terminal.json"
 LOCK="$SYNC_DIR/.prod-upsert-${RUN_DATE}.lock"
+AUTHORIZATION_ID="OP-RECON-standing-daily-sync"
+PY="$ROOT/.venv/bin/python"
 mkdir -p "$SYNC_DIR"
 
-if [ -f "$TERMINAL" ] && grep -q '"status":"success"' "$TERMINAL"; then
-  echo "daily production upsert already complete for $RUN_DATE"
-  exit 0
+if [ -f "$TERMINAL" ]; then
+  if "$PY" scripts/ops/daily_sync_terminal.py \
+      --output "$TERMINAL" --reconcile-existing; then
+    echo "daily production upsert already complete and accounted for $RUN_DATE"
+    exit 0
+  fi
+  echo "existing daily terminal is invalid or cannot be reconciled: $TERMINAL" >&2
+  exit 1
 fi
 
 if ! mkdir "$LOCK" 2>/dev/null; then
@@ -37,21 +44,42 @@ if ! COMPLETION="$(bash scripts/sync/sync_completion_check.sh "$RUN_DATE" 2>&1)"
 fi
 echo "$COMPLETION"
 
+# Every production write is preceded by a fresh identity/integrity preflight and
+# a snapshot-consistent, restore-verified backup.  Failed backup attempts never
+# prune a known-good generation; successful attempts retain the newest five.
+ATTEMPT_ID="daily-${RUN_DATE}-$(date -u +%Y%m%dT%H%M%SZ)"
+PREFLIGHT="$SYNC_DIR/${ATTEMPT_ID}.preflight.json"
+"$PY" scripts/ops/production_preflight.py --output "$PREFLIGHT"
+"$PY" scripts/ops/daily_sync_backup.py \
+  --run-date "$RUN_DATE" \
+  --preflight "$PREFLIGHT" \
+  --authorization-id "$AUTHORIZATION_ID"
+BACKUP_RECEIPT="$(ls -t "$ROOT"/data/backups/daily-production/daily-production-*.receipt.json 2>/dev/null | head -1)"
+[ -n "$BACKUP_RECEIPT" ] || { echo "no verified daily backup receipt" >&2; exit 1; }
+
 # Upsert only. Never add --reconcile here: deletion propagation is a separate,
 # explicitly reviewed operation. The standing authorization and production
 # interlock are enforced inside sync_prod.py before its production connection.
 BATCH_SIZE="${BATCH_SIZE:-5000}" BATCH_SLEEP_MS="${BATCH_SLEEP_MS:-100}" \
-  .venv/bin/python -u scripts/db/sync_prod.py \
-    --authorization-id OP-RECON-standing-daily-sync
+  "$PY" -u scripts/db/sync_prod.py \
+    --authorization-id "$AUTHORIZATION_ID" \
+    --attempt-id "$ATTEMPT_ID" \
+    --run-date "$RUN_DATE" \
+    --preflight "$PREFLIGHT" \
+    --backup-receipt "$BACKUP_RECEIPT"
 
 # Public smoke checks are part of success, not best-effort diagnostics.
 curl -fsS --max-time 30 -o /dev/null https://poliscopic.com/
 curl -fsS --max-time 30 -o /dev/null \
   https://poliscopic.com/meetings/tempe-cc/1964
 
-TMP="${TERMINAL}.tmp.$$"
-printf '{"schema":"daily-prod-upsert-terminal/1","date":"%s","status":"success","mode":"upsert-only","completed_at":"%s"}\n' \
-  "$RUN_DATE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$TMP"
-chmod 600 "$TMP"
-mv "$TMP" "$TERMINAL"
+"$PY" scripts/ops/daily_sync_terminal.py \
+  --run-date "$RUN_DATE" \
+  --attempt-id "$ATTEMPT_ID" \
+  --authorization-id "$AUTHORIZATION_ID" \
+  --preflight "$PREFLIGHT" \
+  --backup-receipt "$BACKUP_RECEIPT" \
+  --output "$TERMINAL" \
+  --public-url https://poliscopic.com/ \
+  --public-url https://poliscopic.com/meetings/tempe-cc/1964
 echo "daily production upsert complete for $RUN_DATE: $TERMINAL"

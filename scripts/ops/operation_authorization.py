@@ -72,6 +72,8 @@ SCOPE_MISMATCH = "SCOPE_MISMATCH"
 TARGET_MISMATCH = "TARGET_MISMATCH"
 NOT_HUMAN_AUTHORIZED = "NOT_HUMAN_AUTHORIZED"
 USES_EXHAUSTED = "USES_EXHAUSTED"
+ATTEMPT_ID_MISSING = "ATTEMPT_ID_MISSING"
+ATTEMPT_ALREADY_TERMINAL = "ATTEMPT_ALREADY_TERMINAL"
 
 # ── execution mode ───────────────────────────────────────────────────────
 #
@@ -266,6 +268,7 @@ def record_authorization(
     mode: str = "single-use",
     max_uses: int | None = 1,
     verbatim_source: dict | None = None,
+    use_accounting: str = "allowance",
 ) -> Path:
     """RECORD an approval already given. Never compose, infer or broaden one.
 
@@ -282,6 +285,8 @@ def record_authorization(
         raise ValueError(f"unknown authorization mode: {mode!r}")
     if mode == "single-use" and max_uses != 1:
         raise ValueError("single-use authorization must have max_uses == 1")
+    if use_accounting not in ("allowance", "successful-terminal"):
+        raise ValueError(f"unknown use accounting: {use_accounting!r}")
     payload = {
         "schema": SCHEMA_AUTHORIZATION,
         "operation": plan["operation"],
@@ -291,6 +296,7 @@ def record_authorization(
         "target": plan["target"],
         "mode": mode,
         "max_uses": max_uses,
+        "use_accounting": use_accounting,
         "verbatim_approval": verbatim_approval,
         "author": author,
         "source": source,
@@ -312,14 +318,25 @@ def _receipts_path(operation_id: str) -> Path:
     return audit_dir() / f"{operation_id}-authorization-uses.jsonl"
 
 
+def _terminal_uses_dir(operation_id: str) -> Path:
+    return audit_dir() / f"{operation_id}-authorization-uses"
+
+
 def count_uses(operation_id: str) -> int:
     path = _receipts_path(operation_id)
-    if not path.is_file():
-        return 0
+    legacy = 0
     try:
-        return sum(1 for line in path.read_text().splitlines() if line.strip())
+        if path.is_file():
+            legacy = sum(1 for line in path.read_text().splitlines() if line.strip())
     except OSError:
-        return 0
+        legacy = 0
+    directory = _terminal_uses_dir(operation_id)
+    try:
+        terminal = sum(1 for item in directory.glob("*.json") if item.is_file()) \
+            if directory.is_dir() else 0
+    except OSError:
+        terminal = 0
+    return legacy + terminal
 
 
 def _append_receipt(operation_id: str, receipt: dict) -> None:
@@ -327,6 +344,76 @@ def _append_receipt(operation_id: str, receipt: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as handle:
         handle.write(canonical_json(receipt) + "\n")
+
+
+def _safe_attempt_id(value: object) -> str | None:
+    import re
+
+    text = str(value or "")
+    return text if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{7,127}", text) else None
+
+
+def _safe_operation_id(value: object) -> str | None:
+    import re
+
+    text = str(value or "")
+    return text if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{2,127}", text) else None
+
+
+def terminal_use_path(operation_id: str, attempt_id: str) -> Path:
+    safe_operation = _safe_operation_id(operation_id)
+    safe = _safe_attempt_id(attempt_id)
+    if safe_operation is None or safe is None:
+        raise ValueError("operation or attempt id is absent or unsafe")
+    return _terminal_uses_dir(safe_operation) / f"{safe}.json"
+
+
+def consume_successful_terminal(operation_id: str, terminal: dict) -> Path:
+    """Consume one deferred use only for a digest-valid successful terminal.
+
+    This is intentionally separate from :func:`validate`: opening the production
+    gate is not success.  Failed/refused attempts therefore consume no use.
+    """
+    attempt_id = _safe_attempt_id(terminal.get("attempt_id"))
+    safe_operation_id = _safe_operation_id(operation_id)
+    operation = str(terminal.get("operation") or "")
+    if attempt_id is None or safe_operation_id is None:
+        raise ValueError("terminal receipt has no safe operation or attempt id")
+    if operation not in {"OP-CODE", "OP-SCHEMA", "OP-REPAIR", "OP-RECON",
+                         "OP-RESTORE"}:
+        raise ValueError("terminal receipt has an unknown production operation")
+    if (terminal.get("terminal") is not True or
+            terminal.get("status") != "succeeded" or
+            terminal.get("reconciled") is not True):
+        raise ValueError("terminal receipt is not a successful reconciled terminal")
+    recorded_digest = terminal.get("digest")
+    body = {key: value for key, value in terminal.items() if key != "digest"}
+    if recorded_digest != hashlib.sha256(canonical_json(body).encode("utf-8")).hexdigest():
+        raise ValueError("terminal receipt digest does not match its contents")
+
+    directory = operation_dir(operation, safe_operation_id)
+    plan, plan_error = _read_json(directory / "plan.json")
+    auth, auth_error = _read_json(directory / "authorization.json")
+    if plan is None or auth is None:
+        raise ValueError(f"authorization artifacts unavailable: {plan_error or auth_error}")
+    if (plan.get("digest") != plan_digest(plan) or
+            auth.get("auth_digest") != authorization_digest(auth)):
+        raise ValueError("authorization artifacts are not digest-valid")
+    if (plan.get("operation") != operation or auth.get("operation") != operation or
+            plan.get("operation_id") != safe_operation_id or
+            terminal.get("operation_id") != safe_operation_id or
+            terminal.get("plan_digest") != plan.get("digest") or
+            terminal.get("authorization_digest") != auth.get("auth_digest")):
+        raise ValueError("terminal receipt does not bind the authorization")
+    if auth.get("use_accounting") != "successful-terminal":
+        raise ValueError("authorization does not use terminal accounting")
+    maximum = auth.get("max_uses")
+    used = count_uses(safe_operation_id)
+    if isinstance(maximum, int) and maximum >= 0 and used >= maximum:
+        raise ValueError(f"authorization used {used}/{maximum} times")
+    path = terminal_use_path(safe_operation_id, attempt_id)
+    _write_exclusive(path, terminal)
+    return path
 
 
 # ── the validator ────────────────────────────────────────────────────────
@@ -370,6 +457,7 @@ def validate(
     now: datetime | None = None,
     mode: str | None = None,
     operation_id: str | None = None,
+    attempt_id: str | None = None,
 ) -> dict:
     """Validate a human authorization for THIS exact operation request.
 
@@ -590,7 +678,21 @@ def validate(
         return _refuse(USES_EXHAUSTED,
                        f"authorization used {used}/{max_uses} times")
 
-    # 10. ALLOWED — record the use
+    accounting = auth.get("use_accounting") or "allowance"
+    if accounting not in ("allowance", "successful-terminal"):
+        return _refuse(AUTHORIZATION_MALFORMED,
+                       f"unknown use accounting {accounting!r}")
+    safe_attempt = _safe_attempt_id(attempt_id)
+    if accounting == "successful-terminal":
+        if safe_attempt is None:
+            return _refuse(ATTEMPT_ID_MISSING,
+                           "terminal-accounted authorization requires a safe attempt id")
+        if terminal_use_path(plan.get("operation_id") or "unknown", safe_attempt).exists():
+            return _refuse(ATTEMPT_ALREADY_TERMINAL,
+                           f"attempt {safe_attempt!r} already has a terminal use receipt")
+
+    # 10. ALLOWED — legacy authorizations consume at allowance.  Daily standing
+    # authorizations defer consumption until consume_successful_terminal().
     receipt = {
         "operation": operation,
         "operation_id": plan.get("operation_id"),
@@ -603,19 +705,24 @@ def validate(
         "max_uses": max_uses,
         "author": auth.get("author"),
         "at": _iso(now),
+        "attempt_id": safe_attempt,
+        "use_accounting": accounting,
     }
-    try:
-        _append_receipt(plan.get("operation_id") or "unknown", receipt)
-    except OSError as exc:
-        return _refuse(AUTHORIZATION_MALFORMED,
-                       f"could not record authorization use receipt: {exc}")
+    if accounting == "allowance":
+        try:
+            _append_receipt(plan.get("operation_id") or "unknown", receipt)
+        except OSError as exc:
+            return _refuse(AUTHORIZATION_MALFORMED,
+                           f"could not record authorization use receipt: {exc}")
 
     return {
         "schema": SCHEMA_VERDICT,
         "status": "ALLOWED",
         "code": None,
         "reason": (f"validated {mode} authorization for {operation}, "
-                   f"use {used + 1}" + (f"/{max_uses}" if max_uses else "")),
+                   + ("use pending successful terminal"
+                      if accounting == "successful-terminal" else f"use {used + 1}")
+                   + (f"/{max_uses}" if max_uses else "")),
         "authorization_issuance": "validated",
         "operation": operation,
         "operation_id": plan.get("operation_id"),
@@ -625,4 +732,5 @@ def validate(
         "scope": sorted(plan.get("scope") or []),
         "valid_until": _iso(not_after),
         "receipt": receipt,
+        "use_accounting": accounting,
     }
