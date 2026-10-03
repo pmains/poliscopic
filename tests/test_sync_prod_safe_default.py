@@ -65,3 +65,7 @@ def test_interlock_authority_exists_and_refuses_production_kinds():
     for kind in ("OP-CODE", "OP-SCHEMA", "OP-REPAIR", "OP-RECON", "OP-RESTORE"):
         assert kind in src, f"{kind} missing from the interlock classification"
     assert "no environment escape hatch" in src
+    # The refusal is now attributed by the one-operation validator, so assert the
+    # interlock actually consults it — otherwise the string checks above would
+    # still pass even if the authority stopped refusing.
+    assert "operation_authorization" in src

@@ -42,7 +42,7 @@ from __future__ import annotations
 import os
 import sys
 
-from sqlalchemy import inspect, text
+from sqlalchemy import bindparam, inspect, text
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 for _path in (_REPO_ROOT, os.path.join(_REPO_ROOT, "scripts"),
@@ -245,12 +245,16 @@ def assert_parents_synced(table: str, skipped_by_table) -> None:
             )
 
 
-def _parent_rows(engine, *, column: str, value: object) -> list[dict]:
-    """Return reviewed identity fields for one parent lookup.
+def _parent_rows_by_value(
+    engine, *, column: str, values: list[object], chunk_size: int = 500
+) -> dict[object, list[dict]]:
+    """Return reviewed parent identity fields grouped by lookup value.
 
     The selected fields are restricted to columns present on both fixture and real
     schemas. ``id`` and ``body_code`` are mandatory because they are the two live
-    reference representations.
+    reference representations. Values are fetched in bounded batches so validating
+    a dependent table takes a handful of database round trips rather than one query
+    and one schema inspection per distinct reference.
     """
     columns = {c["name"] for c in inspect(engine).get_columns(PARENT_TABLE)}
     required = {"id", "body_code"}
@@ -263,21 +267,35 @@ def _parent_rows(engine, *, column: str, value: object) -> list[dict]:
         name for name in ("id", "body_code", "name", "jurisdiction_id", "slug")
         if name in columns
     ]
+    if column not in columns:
+        raise ReferenceGuardError(
+            f"{PARENT_TABLE} lacks lookup column {column!r}"
+        )
+    if column not in identity_columns:
+        identity_columns.append(column)
     selected = ", ".join(f'"{name}"' for name in identity_columns)
+    grouped = {value: [] for value in values}
+    statement = text(
+        f'SELECT {selected} FROM "{PARENT_TABLE}" WHERE "{column}" IN :values'
+    ).bindparams(bindparam("values", expanding=True))
     with engine.connect() as conn:
-        rows = conn.execute(
-            text(f'SELECT {selected} FROM "{PARENT_TABLE}" WHERE "{column}" = :v'),
-            {"v": value},
-        ).mappings().fetchall()
-    return [dict(row) for row in rows]
+        for start in range(0, len(values), chunk_size):
+            chunk = values[start:start + chunk_size]
+            for row in conn.execute(statement, {"values": chunk}).mappings():
+                result = dict(row)
+                grouped.setdefault(result[column], []).append(result)
+    return grouped
 
 
-def assert_target_parent_coverage(dev_engine, prod_engine, table: str) -> None:
+def assert_target_parent_coverage(
+    dev_engine, prod_engine, table: str, *, since=None
+) -> None:
     """Refuse before a dependent write unless every exact parent is on target.
 
-    This examines all source rows for the dependent table. Reference registries are
-    small and transferred in full, so the conservative all-row check is both cheap
-    and immune to checkpoint mistakes.
+    For a full sync this examines all source rows. For an incremental sync,
+    ``since`` restricts the check to the exact changed-row population eligible for
+    this run. Historical rows that are not being written cannot create a new target
+    reference violation; newly changed rows still fail closed.
     """
     declared = PUBLIC_BODY_DEPENDENTS.get(table)
     if declared is None:
@@ -295,9 +313,13 @@ def assert_target_parent_coverage(dev_engine, prod_engine, table: str) -> None:
     ids: set[int] = set()
     with dev_engine.connect() as conn:
         for column in declared:
+            changed = (
+                ' AND "updated_at" > :since' if since is not None else ""
+            )
             rows = conn.execute(
                 text(f'SELECT DISTINCT "{column}" FROM "{table}" '
-                     f'WHERE "{column}" IS NOT NULL')
+                     f'WHERE "{column}" IS NOT NULL{changed}'),
+                {"since": since} if since is not None else {},
             ).fetchall()
             for (value,) in rows:
                 if column == PUBLIC_BODY_ID_COLUMN:
@@ -314,9 +336,15 @@ def assert_target_parent_coverage(dev_engine, prod_engine, table: str) -> None:
                     codes.add(str(value).strip())
 
     for column, values in (("body_code", sorted(codes)), ("id", sorted(ids))):
+        source_by_value = _parent_rows_by_value(
+            dev_engine, column=column, values=values
+        )
+        target_by_value = _parent_rows_by_value(
+            prod_engine, column=column, values=values
+        )
         for value in values:
-            source_rows = _parent_rows(dev_engine, column=column, value=value)
-            target_rows = _parent_rows(prod_engine, column=column, value=value)
+            source_rows = source_by_value.get(value, [])
+            target_rows = target_by_value.get(value, [])
             if len(source_rows) != 1:
                 raise ReferenceGuardError(
                     f"ambiguous/missing source parent for {column}={value!r}: "

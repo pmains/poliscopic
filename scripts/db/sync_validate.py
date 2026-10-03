@@ -32,7 +32,12 @@ log = logging.getLogger("sync")
 
 
 def _validate(dev_engine, prod_engine):
-    """Post-sync sanity checks — compare row counts between dev and prod."""
+    """Post-sync sanity checks for an upsert-only propagation lane.
+
+    Production may legitimately contain historical rows no longer present in dev:
+    this lane is explicitly forbidden from deleting them. A production deficit is
+    a failure; a production surplus is reported but is not an upsert failure.
+    """
     log.info("── Post-sync validation ──")
     ok = True
 
@@ -46,8 +51,8 @@ def _validate(dev_engine, prod_engine):
                 prod_cnt = c.execute(
                     text(f'SELECT COUNT(*) FROM public."{table}"')
                 ).scalar()
-            status = "✅" if dev_cnt == prod_cnt else "⚠"
-            if dev_cnt != prod_cnt:
+            status = "✅" if dev_cnt == prod_cnt else ("ℹ" if prod_cnt > dev_cnt else "⚠")
+            if prod_cnt < dev_cnt:
                 ok = False
             log.info("  %s %-35s  dev=%7d  prod=%7d", status, table, dev_cnt, prod_cnt)
         except Exception as e:
@@ -55,9 +60,9 @@ def _validate(dev_engine, prod_engine):
             ok = False
 
     if ok:
-        log.info("  ✅ All row counts match dev")
+        log.info("  ✅ Production contains every dev row by count")
     else:
-        log.warning("  ⚠ Some row counts differ from dev — investigate")
+        log.warning("  ⚠ Some production tables have fewer rows than dev")
     return ok
 
 

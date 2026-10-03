@@ -44,6 +44,8 @@ if str(OPS) not in sys.path:
     sys.path.insert(0, str(OPS))
 
 interlock = importlib.import_module("production_interlock")
+#: Refusal codes now come from the one-operation validator the interlock consults.
+operation_authorization = importlib.import_module("operation_authorization")
 
 NOW = datetime(2026, 9, 19, 3, 0, 0, tzinfo=timezone.utc)
 PAST = (NOW - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -72,10 +74,14 @@ def _valid_payload(**over):
 
 
 @pytest.fixture(autouse=True)
-def _clean_env(monkeypatch):
+def _clean_env(monkeypatch, tmp_path):
     for var in interlock.FORBIDDEN_ENV:
         monkeypatch.delenv(var, raising=False)
     monkeypatch.delenv("POLISCOPIC_INTERLOCK_DIR", raising=False)
+    # Hermetic: a REAL authorization under data/release must never be visible to a
+    # test, or "refused" assertions would depend on local state.
+    monkeypatch.setenv("POLISCOPIC_RELEASE_DIR", str(tmp_path / "no-release"))
+    monkeypatch.setenv("POLISCOPIC_AUDIT_DIR", str(tmp_path / "no-audit"))
 
 
 # ── A. classification ────────────────────────────────────────────────────
@@ -104,10 +110,21 @@ def test_unknown_kind_is_not_defaulted_to_safe():
 
 @pytest.mark.parametrize("kind", ["OP-CODE", "OP-SCHEMA", "OP-REPAIR", "OP-RECON", "OP-RESTORE"])
 def test_mutating_kind_refused_with_no_hold(tmp_path, monkeypatch, kind):
+    """No authorization artifact exists, so every mutating kind is refused.
+
+    The refusal CODE changed on 2026-09-21 when the one-operation validator was
+    wired in: the refusal is now attributed to the specific gap (no authorization
+    present) rather than the previous blanket "issuance is disabled". The
+    invariant is unchanged — a production-mutating kind with no VALIDATED
+    authorization is REFUSED.
+    """
     monkeypatch.setenv("POLISCOPIC_INTERLOCK_DIR", str(_hold_dir(tmp_path)))
-    verdict = interlock.check(kind, now=NOW)
+    # An explicit mode: every production-mutating request must declare one, since a
+    # table scope alone cannot separate an upsert from a delete. The assertion below
+    # is about the MISSING AUTHORIZATION, so any known mode reaches it.
+    verdict = interlock.check(kind, now=NOW, mode="upsert")
     assert verdict["status"] == "REFUSED"
-    assert verdict["code"] == interlock.AUTHORIZATION_DISABLED
+    assert verdict["code"] == operation_authorization.AUTHORIZATION_MISSING
     assert verdict["authorization_issuance"] == "disabled"
 
 
@@ -116,14 +133,19 @@ def test_mutating_kind_refused_even_with_a_valid_hold(tmp_path, monkeypatch, kin
     """A hold is a containment condition, NOT a permission."""
     monkeypatch.setenv("POLISCOPIC_INTERLOCK_DIR",
                        str(_hold_dir(tmp_path, payload=_valid_payload())))
-    verdict = interlock.check(kind, now=NOW)
+    verdict = interlock.check(kind, now=NOW, mode="upsert")
     assert verdict["status"] == "REFUSED"
-    assert verdict["code"] == interlock.AUTHORIZATION_DISABLED
+    assert verdict["code"] == operation_authorization.AUTHORIZATION_MISSING
     assert verdict["hold"]["state"] == "present"
 
 
 def test_no_input_can_produce_allowed_for_a_mutating_kind(tmp_path, monkeypatch):
-    """Exhaustive: over every hold state, a mutating kind is never ALLOWED."""
+    """Over every HOLD state (with no authorization present), never ALLOWED.
+
+    Scope note: this varies hold state and stale receipts only. It does NOT claim
+    that no authorization can ever allow a mutating kind — that is now the
+    designed path, proven separately in test_operation_authorization.py.
+    """
     states = {
         "absent": None,
         "malformed": "{not json",
@@ -415,8 +437,15 @@ def test_sync_prod_classifies_dry_run_readonly_and_mutation_as_recon(monkeypatch
 
     import production_interlock as real_interlock
 
-    def spy(op, entry_point=""):
-        seen.append(op)
+    def spy(op, entry_point="", scope=None, target="production", now=None,
+            mode=None):
+        # `scope` is REQUIRED by the validator: sync_prod must declare the exact
+        # write set it will touch, so the request can never understate it. `mode` is
+        # REQUIRED too, and must be the mode the run will ACTUALLY use — a table
+        # scope alone cannot separate an upsert from a delete or a schema change.
+        # See tests/test_sync_scope_declaration.py and
+        # tests/test_execution_mode_binding.py for the parity/refusal tests.
+        seen.append((op, mode))
         return {"status": "REFUSED", "code": "AUTHORIZATION_DISABLED"}
 
     monkeypatch.setattr(real_interlock, "check", spy)
@@ -429,7 +458,9 @@ def test_sync_prod_classifies_dry_run_readonly_and_mutation_as_recon(monkeypatch
 
     module.main(reconcile_dry_run=True)
     module.main(reconcile=True)
-    assert seen == ["OP-STATUS", "OP-RECON"]
+    module.main()
+    assert seen == [("OP-STATUS", None), ("OP-RECON", "reconcile"),
+                    ("OP-RECON", "upsert")]
 
 
 # ── B. the checker still has no reachable production entry point ─────────

@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Standing daily-sync authorization — review</title>
+<style>
+  :root { color-scheme: light; }
+  body { font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         margin: 0 auto; max-width: 46rem; padding: 2rem 1.25rem 4rem; color: #17202a; }
+  h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+  h2 { font-size: 1.1rem; margin: 2rem 0 .5rem; border-bottom: 1px solid #e3e8ee; padding-bottom: .3rem; }
+  .lead { font-size: 1.02rem; }
+  .note { background: #f4f7fa; border-left: 4px solid #7f8c99; padding: .75rem 1rem; margin: 1rem 0; }
+  .warn { background: #fff6f0; border-left: 4px solid #c0392b; padding: .75rem 1rem; margin: 1rem 0; }
+  ul { margin: .4rem 0 .4rem 1.2rem; padding: 0; }
+  li { margin: .2rem 0; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88rem; }
+  table { border-collapse: collapse; width: 100%; margin: .5rem 0; }
+  th, td { text-align: left; border-bottom: 1px solid #e3e8ee; padding: .35rem .5rem; vertical-align: top; }
+  th { font-weight: 600; background: #f4f7fa; }
+  .digest { word-break: break-all; background: #f4f7fa; padding: .4rem .5rem; border-radius: 4px; }
+  label { display: block; margin: .75rem 0 .25rem; font-weight: 600; }
+  input[type=text] { width: 100%; padding: .5rem; border: 1px solid #c8d1da; border-radius: 4px; font: inherit; }
+  .errors { background: #fdecea; border-left: 4px solid #c0392b; padding: .75rem 1rem; }
+  button { margin-top: 1rem; padding: .6rem 1.1rem; font: inherit; font-weight: 600;
+           background: #17202a; color: #fff; border: 0; border-radius: 4px; cursor: pointer; }
+  footer { margin-top: 3rem; color: #5a6673; font-size: .85rem; }
+</style>
+</head>
+<body>
+
+{% if page == "confirmed" %}
+  <h1>Approval recorded</h1>
+  <div class="note">
+    <strong>This recorded your approval. It executed nothing.</strong>
+    No sync ran, no database was opened, and no production state changed. Your
+    approval is held in an immutable mode-<span class="mono">0600</span> record.
+  </div>
+  <p>
+    A recurring authorization is still required before anything can sync: it must be
+    recorded through the reviewed mechanism
+    (<span class="mono">scripts/ops/operation_authorization.py</span>) against a real
+    plan, in your own words.
+  </p>
+  <h2>Record</h2>
+  <table>
+    <tr><th>Reviewer</th><td>{{ record.reviewer }}</td></tr>
+    <tr><th>Approved at</th><td class="mono">{{ record.approved_at }}</td></tr>
+    <tr><th>Proposal digest</th><td class="digest mono">{{ record.proposal_digest }}</td></tr>
+    <tr><th>Record digest</th><td class="mono">{{ record.record_digest }}</td></tr>
+    <tr><th>Wrote</th><td class="mono">{{ record_path }}</td></tr>
+  </table>
+  <p><a href="{{ url_for('standing_sync_approval.review') }}">Back to the review page</a></p>
+
+{% else %}
+  <h1>Standing daily production-sync authorization</h1>
+  <p class="lead">{{ summary }}</p>
+
+  {% if errors %}
+    <div class="errors">
+      <strong>Not recorded.</strong>
+      <ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul>
+    </div>
+  {% endif %}
+
+  <h2>What you are being asked to allow</h2>
+  <p>
+    Every day, after the scrape and the entity pipeline have finished and passed
+    their checks, copy the day's data from the development database to the public
+    production database. Instead of asking you each morning, this proposal would
+    let that routine copy happen on its own — but <strong>only</strong> while every
+    mandatory gate below passes, and only for the exact tables listed further down.
+  </p>
+  <p>
+    If any gate fails, the copy must not run, and a failure must not quietly use up
+    one of the permitted runs. This is a bounded permission: it expires, it has a
+    maximum number of successful runs, and it can be revoked.
+  </p>
+
+  <h2>What this does <em>not</em> allow</h2>
+  <div class="warn">
+    <ul>
+      {% for action in prohibited_actions %}<li>{{ action }}</li>{% endfor %}
+    </ul>
+  </div>
+  <p>
+    Deleting rows in production, changing the database structure, deploying code,
+    restarting services, changing scheduled jobs, or changing alerts all still
+    require their own separate approval. So does repairing anything in production
+    beyond the values an approved copy carries across.
+  </p>
+
+  <h2>Duration and limits</h2>
+  <table>
+    <tr><th>Lasts</th><td>{{ validity_days }} days from approval</td></tr>
+    <tr><th>Valid from</th><td class="mono">{{ not_before }}</td></tr>
+    <tr><th>Valid until</th><td class="mono">{{ not_after }}</td></tr>
+    <tr><th>Maximum successful runs</th><td>{{ max_uses }}</td></tr>
+    <tr><th>A run counts only when</th><td>{{ use_accounting.consumed_only_after }}</td></tr>
+    <tr><th>On failure or refusal</th><td>{{ use_accounting.failures_and_refusals }}</td></tr>
+  </table>
+
+  <h2>Permitted actions</h2>
+  <ul>{% for action in permitted_actions %}<li>{{ action }}</li>{% endfor %}</ul>
+
+  <h2>Mandatory gates (all must pass, every run)</h2>
+  <table>
+    <tr><th>#</th><th>Gate</th><th>Requirement</th></tr>
+    {% for gate in gates %}
+      <tr><td>{{ loop.index }}</td><td class="mono">{{ gate.id }}</td><td>{{ gate.requirement }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <h2>Exact tables in scope ({{ scope|length }})</h2>
+  <p>
+    Derived from the single runtime declaration authority, not from whatever
+    happened to change on a particular day.
+  </p>
+  <ul>{% for table in scope %}<li class="mono">{{ table }}</li>{% endfor %}</ul>
+
+  <h2>Technical bindings</h2>
+  <table>
+    <tr><th>Operation</th><td class="mono">{{ operation }}</td></tr>
+    <tr><th>Entry point</th><td class="mono">{{ entry_point }}</td></tr>
+    <tr><th>Target</th><td class="mono">{{ target }}</td></tr>
+    <tr><th>Execution mode</th><td class="mono">{{ execution_mode }}</td></tr>
+  </table>
+  <h3>Bound code</h3>
+  <table>
+    <tr><th>File</th><th>sha256</th></tr>
+    {% for path, digest in code_hashes.items() %}
+      <tr><td class="mono">{{ path }}</td><td class="mono">{{ digest[:16] }}…</td></tr>
+    {% endfor %}
+  </table>
+  <p>
+    If any of that code changes, or the operation, entry point, target or table
+    scope differs, the authorization must refuse before it reaches credentials,
+    the network, or the database.
+  </p>
+
+  <h2>Proposal digest</h2>
+  <p class="digest mono">{{ digest }}</p>
+
+  <h2>Your approval</h2>
+  <form method="post" action="{{ url_for('standing_sync_approval.approve') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <label for="reviewer">Your name (the approval must name its author)</label>
+    <input type="text" id="reviewer" name="reviewer" autocomplete="off" required>
+
+    <label for="confirm_digest">Type the proposal digest exactly as shown above</label>
+    <input type="text" id="confirm_digest" name="confirm_digest"
+           class="mono" autocomplete="off" required>
+
+    <label for="acknowledge_recurring">
+      <input type="checkbox" id="acknowledge_recurring" name="acknowledge_recurring"
+             value="yes" style="width:auto;margin-right:.45rem">
+      I understand this permits recurring production upserts, and only while every
+      mandatory gate passes.
+    </label>
+
+    <button type="submit">Record approval</button>
+  </form>
+  <p>
+    Recording approval executes nothing. It writes one immutable record and stops.
+  </p>
+{% endif %}
+
+<footer>
+  Loopback only · debug disabled · reloader disabled. This page is not reachable
+  from the main application.
+</footer>
+</body>
+</html>
