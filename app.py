@@ -13,16 +13,24 @@ import os
 import sys
 from pathlib import Path
 
+_here = Path(__file__).resolve().parent
+
 # Production-only: add local packages when running in .venv that doesn't own site-packages
-_local_pkgs = Path(__file__).resolve().parent / ".local-pkgs"
+_local_pkgs = _here / ".local-pkgs"
 if _local_pkgs.exists():
     sys.path.insert(0, str(_local_pkgs))
 
-# Ensure scripts/ and routes/ are importable
-_here = Path(__file__).resolve().parent
+# Root entry points are compatibility shims while canonical modules migrate to
+# the installable source tree. Production releases include src/ even when the
+# long-lived service virtualenv has not yet been synchronized by uv.
+_src = _here / "src"
+if _src.exists():
+    sys.path.insert(0, str(_src))
+
+# Ensure scripts/ and routes/ are importable.
 sys.path.insert(0, str(_here / "scripts"))
 
-from routes import create_app
+from routes import create_app  # noqa: E402
 
 app = create_app()
 

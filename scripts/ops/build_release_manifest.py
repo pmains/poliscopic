@@ -131,13 +131,13 @@ EXCLUDE_EXACT = {
 }
 EXCLUDE_SUFFIXES = (".pyc", ".log", ".sqlite", ".sqlite3", ".ipynb")
 
-# Module search roots, in the order the app resolves them.
-MODULE_ROOTS = (REPO_ROOT / "scripts", REPO_ROOT)
+# Module search roots, in the order the app resolves them. The canonical
+# installable package must be considered before its flat compatibility shims.
+MODULE_ROOTS = (REPO_ROOT / "src", REPO_ROOT / "scripts", REPO_ROOT)
 
 
 def module_name_for(path: Path) -> str:
     """Canonical dotted module name for a project file, or '' if N/A."""
-    rel = path.relative_to(REPO_ROOT)
     for root in MODULE_ROOTS:
         try:
             sub = path.relative_to(root)
@@ -168,6 +168,32 @@ def local_modules() -> dict[str, Path]:
     return out
 
 
+def registry_adapter_entries() -> list[str]:
+    """Return dynamically declared scraper adapters as release dependencies.
+
+    Adapter modules are strings in the typed source registry, so Python's AST
+    import walk cannot discover them. Parse only that declarative keyword and
+    resolve it through the same local-module catalog used by the manifest.
+    """
+    registry = REPO_ROOT / "scripts" / "scraper" / "source_registry.py"
+    tree = ast.parse(registry.read_text(encoding="utf-8"))
+    modules = local_modules()
+    entries: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.keyword) or node.arg != "adapter_module":
+            continue
+        if (
+            not isinstance(node.value, ast.Constant)
+            or not isinstance(node.value.value, str)
+        ):
+            raise RuntimeError("source registry adapter_module must be a string literal")
+        target = modules.get(node.value.value)
+        if target is None:
+            raise RuntimeError(f"source registry adapter is not importable: {node.value.value}")
+        entries.add(str(target.relative_to(REPO_ROOT)))
+    return sorted(entries)
+
+
 def imports_of(path: Path) -> set[str]:
     """Dotted module names imported by `path` (AST, so comments don't count)."""
     try:
@@ -176,17 +202,27 @@ def imports_of(path: Path) -> set[str]:
         print(f"WARN: cannot parse {path}: {exc}", file=sys.stderr)
         return set()
     found: set[str] = set()
+    current = module_name_for(path)
+    package = current if path.name == "__init__.py" else current.rpartition(".")[0]
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 found.add(alias.name)
         elif isinstance(node, ast.ImportFrom):
-            if node.level:           # relative import
-                continue
-            if node.module:
-                found.add(node.module)
+            module = node.module or ""
+            if node.level:
+                parts = package.split(".") if package else []
+                ascend = node.level - 1
+                if ascend > len(parts):
+                    continue
+                prefix = parts[: len(parts) - ascend]
+                if module:
+                    prefix.extend(module.split("."))
+                module = ".".join(prefix)
+            if module:
+                found.add(module)
                 for alias in node.names:
-                    found.add(f"{node.module}.{alias.name}")
+                    found.add(f"{module}.{alias.name}")
     return found
 
 
@@ -284,7 +320,8 @@ def main() -> int:
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
-    files, excluded = resolve(ENTRIES)
+    adapter_entries = registry_adapter_entries()
+    files, excluded = resolve(ENTRIES + adapter_entries)
 
     precondition_problems, preconditions = reference_preconditions()
     if precondition_problems:
@@ -318,6 +355,7 @@ def main() -> int:
             "data_reconciliation": ENTRY_RECONCILE,
             "web_application": ENTRY_WEB,
             "web_assets": ENTRY_WEB_ASSETS,
+            "source_registry_adapters": adapter_entries,
         },
         "files": records,
         "file_count": len(records),
