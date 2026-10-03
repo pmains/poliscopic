@@ -487,28 +487,6 @@ async def main() -> int:
         print(f"{_pdt.datetime.now().strftime('%H:%M:%S')} Done. {total_fetched} results, {total_new} new, {skipped_sentinels} sentinel/non-meeting skipped in {elapsed:.0f}s")
         return 0
 
-    if args.source == "phoenix-planning" and args.sync:
-        from scraper.jurisdictions.phoenix_planning import sync_all
-        from db import get_session, init_db
-        import datetime as _pdt
-
-        init_db()
-        session = get_session()
-        force = getattr(args, "force", False)
-
-        results = sync_all(session, force=force)
-
-        session.close()
-        ts = _pdt.datetime.now().strftime("%H:%M:%S")
-        events = results.get("events", {})
-        staff = results.get("staff_reports", {})
-        pud = results.get("pud_cases", {})
-        print(f"{ts} Phoenix planning sync complete: "
-              f"{events.get('synced', 0)}/{events.get('fetched', 0)} events, "
-              f"{staff.get('docs_synced', 0)}/{staff.get('fetched', 0)} staff docs, "
-              f"{pud.get('docs_synced', 0)}/{pud.get('fetched', 0)} PUD docs")
-        return 0
-
     if args.init_db:
         from scraper.housing_hearings import HearingFinder
         import sys as _sys

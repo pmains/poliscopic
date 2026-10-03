@@ -153,6 +153,7 @@ SCHEDULED_SOURCES: tuple[ScheduledSource, ...] = (
         "C",
         "parallel",
         "phoenix",
+        adapter_module="scraper.jurisdictions.phoenix_planning_adapter",
         accepts_date_range=False,
     ),
     ScheduledSource(
