@@ -341,11 +341,17 @@ def require_role_url(
     """Validate a URL for a role and return it, ready for engine construction.
 
     Thin wrapper over :func:`resolve_role_url` so a caller can validate and then
-    build an engine without restating any rule.  Returning the URL unchanged keeps
-    the existing connection semantics.
+    build an engine without restating any rule. Bare PostgreSQL URLs are bound to
+    the installed psycopg2 driver explicitly; SQLAlchemy 2.1 otherwise selects
+    psycopg v3, which is intentionally not a project dependency.
     """
     resolve_role_url(role, url, label=label)
-    return str(url)
+    text = str(url)
+    if text.startswith("postgresql://"):
+        return "postgresql+psycopg2://" + text.removeprefix("postgresql://")
+    if text.startswith("postgres://"):
+        return "postgresql+psycopg2://" + text.removeprefix("postgres://")
+    return text
 
 
 def new_test_database_path() -> str:
