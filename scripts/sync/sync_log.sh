@@ -30,6 +30,12 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 cd "$PROJECT_ROOT"
 
+# launchd supplies a minimal PATH that omits Homebrew on Apple Silicon.  The
+# document extraction cascade invokes Poppler (`pdftotext`) and Tesseract by
+# name, so make their canonical install location explicit for unattended runs.
+# Keep the system paths as fallbacks for Intel Macs and system-provided tools.
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
 # ── Settings ────────────────────────────────────────────────────────────────
 LOG_DIR="data/sync"
 LOG_RETENTION_DAYS=90
@@ -64,6 +70,21 @@ START_ISO=$(date -Iseconds)
 log_info() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
 }
+
+# ── Non-executable metric parsing ──────────────────────────────────────────
+# NEVER eval the DB pre/post-check output: it mixes a human config banner in with
+# the assignments, and the banner's "(tier=development)" parentheses made `eval` a
+# syntax error that blanked EVERY metric to "?" (pre-existing, not just 09-23).
+# See scripts/sync/metric_parse.sh and tests/test_sync_summary_metrics.py.
+if [ ! -f "$SCRIPT_DIR/metric_parse.sh" ]; then
+    echo "FATAL: metric_parse.sh missing next to sync_log.sh" >&2
+    exit 5
+fi
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/metric_parse.sh"
+METRICS_STATUS="ok"
+PRE_METRICS="$(mktemp -t sync_pre_metrics.XXXXXX)"
+POST_METRICS="$(mktemp -t sync_post_metrics.XXXXXX)"
 
 # ── Step 1: DB pre-check ───────────────────────────────────────────────────
 log_info "Running database pre-check..."
@@ -122,14 +143,19 @@ print(f'TOTAL_ITEMS={total_items}')
 )
 
 echo "$PRE_CHECK"
-eval "$PRE_CHECK" 2>/dev/null || true
+parse_metrics "$PRE_CHECK" "$PRE_METRICS"
+PREMISSING="$(missing_metrics "$PRE_METRICS" TOTAL_MEETINGS COMPLETED FAILED PENDING RECENT_SYNCS TOTAL_ITEMS)"
+if [ -n "$PREMISSING" ]; then
+    log_info "ERROR: pre-check metrics missing/malformed:$PREMISSING"
+    METRICS_STATUS="failed"
+fi
 
-PRE_TOTAL="${TOTAL_MEETINGS:-?}"
-PRE_COMPLETED="${COMPLETED:-?}"
-PRE_FAILED="${FAILED:-?}"
-PRE_PENDING="${PENDING:-?}"
-PRE_RECENT="${RECENT_SYNCS:-?}"
-PRE_ITEMS="${TOTAL_ITEMS:-?}"
+PRE_TOTAL="$(metric_or_missing "$PRE_METRICS" TOTAL_MEETINGS)"
+PRE_COMPLETED="$(metric_or_missing "$PRE_METRICS" COMPLETED)"
+PRE_FAILED="$(metric_or_missing "$PRE_METRICS" FAILED)"
+PRE_PENDING="$(metric_or_missing "$PRE_METRICS" PENDING)"
+PRE_RECENT="$(metric_or_missing "$PRE_METRICS" RECENT_SYNCS)"
+PRE_ITEMS="$(metric_or_missing "$PRE_METRICS" TOTAL_ITEMS)"
 
 # ── Step 2: Run run_pipeline.py ─────────────────────────────────────────────
 log_info "Starting run_pipeline.py..."
@@ -138,7 +164,7 @@ log_info "Starting run_pipeline.py..."
 # then compress + save it after.  We also tee to stdout so the
 # operator can see progress.
 TEMP_LOG=$(mktemp -t sync_log.XXXXXX)
-trap 'rm -f "$TEMP_LOG"' EXIT
+trap 'rm -f "$TEMP_LOG" "$PRE_METRICS" "$POST_METRICS"' EXIT
 
 # Disable set -e for the sync run so we capture the exit code
 set +e
@@ -217,17 +243,25 @@ print(f'NEW_ITEMS={new_items}')
 )
 
 echo "$POST_CHECK"
-eval "$POST_CHECK" 2>/dev/null || true
+parse_metrics "$POST_CHECK" "$POST_METRICS"
+POSTMISSING="$(missing_metrics "$POST_METRICS" TOTAL_MEETINGS COMPLETED FAILED PENDING RECENT_SYNCS TOTAL_ITEMS SYNCED_IN_RUN NEW_MEETINGS NEW_ITEMS)"
+if [ -n "$POSTMISSING" ]; then
+    log_info "ERROR: post-check metrics missing/malformed:$POSTMISSING"
+    METRICS_STATUS="failed"
+fi
 
-POST_TOTAL="${TOTAL_MEETINGS:-$PRE_TOTAL}"
-POST_COMPLETED="${COMPLETED:-$PRE_COMPLETED}"
-POST_FAILED="${FAILED:-$PRE_FAILED}"
-POST_PENDING="${PENDING:-$PRE_PENDING}"
-POST_RECENT="${RECENT_SYNCS:-$PRE_RECENT}"
-POST_SYNCED="${SYNCED_IN_RUN:-0}"
-POST_NEW_MEETINGS="${NEW_MEETINGS:-0}"
-POST_ITEMS="${TOTAL_ITEMS:-$PRE_ITEMS}"
-POST_NEW_ITEMS="${NEW_ITEMS:-0}"
+# Totals may legitimately be unchanged; fall back to the pre-check value rather
+# than fabricating one. Everything else reads its own value or "unavailable", and
+# any gap has already set METRICS_STATUS=failed (the run then fails closed).
+POST_TOTAL="$(metric_or "$POST_METRICS" TOTAL_MEETINGS "$PRE_TOTAL")"
+POST_COMPLETED="$(metric_or "$POST_METRICS" COMPLETED "$PRE_COMPLETED")"
+POST_FAILED="$(metric_or "$POST_METRICS" FAILED "$PRE_FAILED")"
+POST_PENDING="$(metric_or "$POST_METRICS" PENDING "$PRE_PENDING")"
+POST_RECENT="$(metric_or "$POST_METRICS" RECENT_SYNCS "$PRE_RECENT")"
+POST_SYNCED="$(metric_or_missing "$POST_METRICS" SYNCED_IN_RUN)"
+POST_NEW_MEETINGS="$(metric_or_missing "$POST_METRICS" NEW_MEETINGS)"
+POST_ITEMS="$(metric_or "$POST_METRICS" TOTAL_ITEMS "$PRE_ITEMS")"
+POST_NEW_ITEMS="$(metric_or_missing "$POST_METRICS" NEW_ITEMS)"
 
 # ── Determine completion status ────────────────────────────────────────────
 # We consider the sync successful if we got at least some new syncs and
@@ -259,6 +293,7 @@ log_info "Writing summary → $SUMMARY_FILE"
     echo "exit_code: $SYNC_EXIT"
     echo "completion_status: $COMPLETION_STATUS"
     echo "error_count: $ERROR_COUNT"
+    echo "metrics_status: $METRICS_STATUS"
     echo ""
     echo "# ── DB pre-check ──"
     echo "pre_total_meetings: $PRE_TOTAL"
@@ -282,9 +317,9 @@ log_info "Writing summary → $SUMMARY_FILE"
     echo "new_agenda_items: $POST_NEW_ITEMS"
     echo ""
     echo "# ── Computed deltas ──"
-    echo "delta_total_meetings: $((POST_TOTAL - PRE_TOTAL))"
-    echo "delta_completed: $((POST_COMPLETED - PRE_COMPLETED))"
-    echo "delta_items: $((POST_ITEMS - PRE_ITEMS))"
+    echo "delta_total_meetings: $(delta "$POST_TOTAL" "$PRE_TOTAL")"
+    echo "delta_completed: $(delta "$POST_COMPLETED" "$PRE_COMPLETED")"
+    echo "delta_items: $(delta "$POST_ITEMS" "$PRE_ITEMS")"
 
 } > "$SUMMARY_FILE"
 
@@ -340,5 +375,12 @@ echo "  New meets:  $POST_NEW_MEETINGS"
 echo "  New items:  $POST_NEW_ITEMS"
 echo "  Full log:   $LOG_FILE"
 echo "  Summary:    $SUMMARY_FILE"
+
+# Fail closed: a summary whose DB metrics could not be parsed is a defective
+# artifact. Never exit 0 with unusable numbers, and never emit "?".
+if [ "$METRICS_STATUS" != "ok" ]; then
+    log_info "ERROR: summary metrics unavailable (METRICS_STATUS=$METRICS_STATUS) — failing closed"
+    exit 5
+fi
 
 exit $SYNC_EXIT

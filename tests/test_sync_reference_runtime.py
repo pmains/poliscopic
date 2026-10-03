@@ -169,6 +169,24 @@ def test_target_parent_identity_conflict_refuses():
         ref.assert_target_parent_coverage(dev, prod, "meetings")
 
 
+def test_incremental_coverage_ignores_untouched_historical_sentinel():
+    """Only rows eligible for this incremental run cross the write boundary."""
+    dev = _engine(
+        "CREATE TABLE public_bodies (id INTEGER PRIMARY KEY, body_code TEXT, name TEXT)",
+        "INSERT INTO public_bodies VALUES (201, 'chandler-pz', 'Chandler P&Z')",
+        "CREATE TABLE meetings (id INTEGER PRIMARY KEY, body TEXT, public_body_id INTEGER, updated_at TIMESTAMP)",
+        "INSERT INTO meetings VALUES (1, '', 201, '2026-01-01 00:00:00')",
+        "INSERT INTO meetings VALUES (2, 'chandler-pz', 201, '2026-09-30 00:00:00')",
+    )
+    prod = _engine(
+        "CREATE TABLE public_bodies (id INTEGER PRIMARY KEY, body_code TEXT, name TEXT)",
+        "INSERT INTO public_bodies VALUES (201, 'chandler-pz', 'Chandler P&Z')",
+    )
+    ref.assert_target_parent_coverage(
+        dev, prod, "meetings", since="2026-09-01 00:00:00"
+    )
+
+
 # ── ordering and abort at the runtime ────────────────────────────────────
 
 
@@ -197,12 +215,16 @@ class _Prod:
 def _drive(monkeypatch, tables, upsert):
     monkeypatch.setattr(sync_runtime, "ALL_SYNC_TABLES", tuple(tables))
     monkeypatch.setattr(sync_runtime, "assert_parity", lambda: None)
-    monkeypatch.setattr(sync_runtime, "assert_target_parent_coverage", lambda *_a: None)
+    monkeypatch.setattr(
+        sync_runtime, "assert_target_parent_coverage", lambda *_a, **_kw: None
+    )
     monkeypatch.setattr(sync_runtime, "_column_intersection", lambda *_a: ["id"])
     monkeypatch.setattr(sync_runtime, "_upsert_table", upsert)
     monkeypatch.setattr(sync_runtime, "_validate", lambda *_a: True)
     monkeypatch.setattr(sync_runtime, "_reference_postconditions", lambda *_a: [])
+    monkeypatch.setattr(sync_runtime, "dangling_counts", lambda *_a, **_k: {})
     monkeypatch.setattr(sync_runtime, "_set_last_sync", lambda *_a: None)
+    monkeypatch.setattr(sync_runtime, "_get_last_sync", lambda *_a: None)
     return _Prod(_Lock())
 
 
@@ -333,6 +355,7 @@ def test_runtime_validation_fails_when_the_integrity_query_raises(monkeypatch):
     monkeypatch.setattr(sync_runtime, "_column_intersection", lambda *_a: ["id"])
     monkeypatch.setattr(sync_runtime, "_upsert_table", upsert)
     monkeypatch.setattr(sync_runtime, "_validate", lambda *_a: True)  # counts say OK
+    monkeypatch.setattr(sync_runtime, "dangling_counts", lambda *_a, **_k: {})
     monkeypatch.setattr(sync_runtime, "_reference_postconditions", boom)
     prod = _Prod(_Lock())
     assert sync_runtime.run_sync(object(), prod) == 1, (
