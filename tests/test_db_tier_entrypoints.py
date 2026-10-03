@@ -220,9 +220,18 @@ def test_shared_validator_refuses_a_swapped_pair():
         resolve_role_url(PRODUCTION, DEV_URL)
 
 
-def test_require_role_url_returns_the_url_unchanged():
-    assert require_role_url(DEVELOPMENT, DEV_URL) == DEV_URL
-    assert require_role_url(PRODUCTION, PROD_URL) == PROD_URL
+def test_require_role_url_selects_installed_driver_for_bare_postgres_urls():
+    assert require_role_url(DEVELOPMENT, DEV_URL).startswith(
+        "postgresql+psycopg2://"
+    )
+    assert require_role_url(PRODUCTION, PROD_URL).startswith(
+        "postgresql+psycopg2://"
+    )
+
+
+def test_require_role_url_preserves_an_explicit_postgres_driver():
+    explicit = PROD_URL.replace("postgresql://", "postgresql+psycopg2://")
+    assert require_role_url(PRODUCTION, explicit) == explicit
 
 
 # -- credentials are never logged ---------------------------------------------
