@@ -571,7 +571,19 @@ def fetch_meeting_items(
             if child_desc and child_desc != child_name:
                 child_text += "\n" + child_desc
 
-            child_number = child_outline.rstrip(".") if child_outline else f"{item_number}.{sort_order + 1}"
+            child_leaf = child_outline.rstrip(".")
+            if child_leaf:
+                # CivicClerk commonly restarts A/B/C beneath each Roman-numeral
+                # section. A bare child outline is therefore not meeting-unique;
+                # preserve its parent path (I.A, IV.A, ...). Some tenants already
+                # return a fully qualified child outline, which we keep as-is.
+                child_number = (
+                    child_leaf
+                    if child_leaf.startswith(f"{item_number}.")
+                    else f"{item_number}.{child_leaf}"
+                )
+            else:
+                child_number = f"{item_number}.{sort_order + 1}"
             child_key = f"{child_number}:{child_name[:60]}"
 
             if child_key not in seen_numbers:
@@ -591,7 +603,14 @@ def fetch_meeting_items(
 
             # -- Extract attachments from child items --
             for att in child.get("attachmentsList") or []:
-                doc_url = att.get("mediaFullPath", "")
+                # Prefer CivicClerk's PDF rendition (including for uploaded DOCX
+                # files) so extraction receives a directly readable document.
+                # mediaFullPath is often a relative storage key on newer tenants.
+                doc_url = (
+                    att.get("pdfAVersionFullPath")
+                    or att.get("pdfVersionFullPath")
+                    or att.get("mediaFullPath", "")
+                )
                 if doc_url and not doc_url.startswith("http"):
                     doc_url = f"{config.api_base}/{doc_url}"
                 doc_name = att.get("fileName", "") or att.get("mediaFileName", "Attachment")
@@ -623,7 +642,11 @@ def fetch_meeting_items(
 
         # -- Extract attachments from the section itself --
         for att in section.get("attachmentsList") or []:
-            doc_url = att.get("mediaFullPath", "")
+            doc_url = (
+                att.get("pdfAVersionFullPath")
+                or att.get("pdfVersionFullPath")
+                or att.get("mediaFullPath", "")
+            )
             if doc_url and not doc_url.startswith("http"):
                 doc_url = f"{config.api_base}/{doc_url}"
             doc_name = att.get("fileName", "") or att.get("mediaFileName", "Attachment")
@@ -655,7 +678,15 @@ def fetch_meeting_items(
     # -- Extract meeting-level published files --
     for pf in pfs:
         ftype = pf.get("type", "")
-        furl = pf.get("url", "") or ""
+        file_id = pf.get("fileId")
+        # GetMeetingFile returns JSON metadata on current CivicClerk tenants;
+        # GetMeetingFileStream is the stable binary document endpoint.
+        furl = (
+            f"{config.api_base}/Meetings/"
+            f"GetMeetingFileStream(fileId={file_id},plainText=false)"
+            if file_id
+            else (pf.get("url", "") or "")
+        )
         fname = pf.get("name", "") or ftype or "Meeting Document"
         if furl:
             docs.append({
