@@ -192,7 +192,8 @@ def test_production_wrapper_refuses_and_cannot_be_driven_by_the_caller(tmp_path)
     fixture = _fixture(tmp_path)
     env = dict(os.environ)
     env["POLISCOPIC_DEPLOY_HOST"] = "not-contacted.invalid"
-    env.pop("POLISCOPIC_DEPLOY_PATHS", None)
+    env["POLISCOPIC_DEPLOY_PATHS"] = "app.py"
+    env["POLISCOPIC_CODE_AUTHORIZATION_ID"] = "missing-code-release"
     # Legacy fixture knobs must have no effect on the production wrapper.
     env["POLISCOPIC_FIXTURE_ROOT"] = str(fixture["fix"])
     env["POLISCOPIC_APP_DIR"] = str(fixture["app"])

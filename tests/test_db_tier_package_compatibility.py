@@ -25,9 +25,9 @@ def test_migrated_tier_module_keeps_repository_dotenv_location():
     assert tier._default_dotenv_path() == ROOT / ".env"
 
 
-def test_package_discovery_excludes_flat_runtime_directories():
+def test_package_discovery_installs_only_canonical_source_tree():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
     assert 'where = ["src"]' in pyproject
     assert 'include = ["poliscopic*"]' in pyproject
-    assert 'package = false' in pyproject
+    assert 'package = true' in pyproject

@@ -29,8 +29,21 @@ cd "$REPO_ROOT"
 # production filesystem, so it is gated too.
 _pi="${POLISCOPIC_PYTHON:-.venv/bin/python}"
 [ -x "$_pi" ] || _pi=python3
+DEPLOY_PATHS="${POLISCOPIC_DEPLOY_PATHS:-}"
+AUTHORIZATION_ID="${POLISCOPIC_CODE_AUTHORIZATION_ID:-}"
+[ -n "$DEPLOY_PATHS" ] || {
+    echo "REFUSED: production interlock requires POLISCOPIC_DEPLOY_PATHS." >&2
+    exit 3
+}
+[ -n "$AUTHORIZATION_ID" ] || {
+    echo "REFUSED: production interlock requires POLISCOPIC_CODE_AUTHORIZATION_ID." >&2
+    exit 3
+}
+AUTHORIZATION_SCOPE="${DEPLOY_PATHS// /,}"
 "$_pi" "$REPO_ROOT/scripts/ops/production_interlock.py" check \
-    --operation OP-CODE --entry-point scripts/ops/deploy_release.sh >&2 || {
+    --operation OP-CODE --entry-point scripts/ops/deploy_release.sh \
+    --mode code --scope "$AUTHORIZATION_SCOPE" \
+    --authorization-id "$AUTHORIZATION_ID" >&2 || {
     echo "REFUSED: production interlock blocked this release." >&2
     exit 3
 }
