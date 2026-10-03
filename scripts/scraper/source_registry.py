@@ -164,7 +164,13 @@ SCHEDULED_SOURCES: tuple[ScheduledSource, ...] = (
         accepts_date_range=False,
     ),
     ScheduledSource("avondale", "C", "parallel", "avondale"),
-    ScheduledSource("tolleson", "C", "parallel", "tolleson"),
+    ScheduledSource(
+        "tolleson",
+        "C",
+        "parallel",
+        "tolleson",
+        adapter_module="scraper.jurisdictions.tolleson",
+    ),
     ScheduledSource(
         "fountain-hills",
         "C",
