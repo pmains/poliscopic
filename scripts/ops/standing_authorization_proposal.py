@@ -90,8 +90,10 @@ GATES: tuple[tuple[str, str], ...] = (
     ("fresh_preflight",
      "Fresh read-only dev/production preflight bound to the execution request."),
     ("backup_receipt",
-     "Fresh protected-production backup receipt, restore-verified under the "
-     "applicable backup contract."),
+     "Fresh snapshot-consistent protected-production backup receipt, "
+     "restore-verified before the upsert; retain the five newest verified "
+     "generations and prune an older verified generation only after a new one "
+     "passes."),
     ("binding_match",
      "Exact code hashes, entry point, target, scope, and operation match the "
      "standing authorization."),
@@ -193,7 +195,8 @@ def build_proposal(
         "mandatory_gates": [{"id": identifier, "requirement": text}
                             for identifier, text in GATES],
         "use_accounting": {
-            "consumed_only_after": ("a successful, reconciled terminal receipt"),
+            "consumed_only_after": ("a successful, digest-bound terminal receipt "
+                                    "whose authorization ledger entry reconciles"),
             "failures_and_refusals": ("do not consume a use and do not reset the "
                                       "count"),
         },
@@ -415,6 +418,13 @@ DEFAULT_CODE_PATHS = (
     "scripts/db/sync_declarations.py",
     "scripts/ops/production_interlock.py",
     "scripts/ops/operation_authorization.py",
+    "scripts/ops/production_preflight.py",
+    "scripts/ops/daily_sync_backup.py",
+    "scripts/ops/daily_sync_gate.py",
+    "scripts/ops/daily_sync_terminal.py",
+    "scripts/sync/sync_completion_check.sh",
+    "scripts/sync/entity_gate_verdict.py",
+    "scripts/sync/daily_prod_upsert.sh",
 )
 
 

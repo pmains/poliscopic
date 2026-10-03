@@ -332,6 +332,7 @@ def issue(
         mode=AUTHORIZATION_MODE,
         max_uses=proposal["max_uses"],
         verbatim_source=verbatim_source,
+        use_accounting="successful-terminal",
     )
     from scripts.ops.operation_authorization import count_uses
 
