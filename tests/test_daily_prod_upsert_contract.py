@@ -8,7 +8,7 @@ def test_daily_runner_is_foreground_idempotent_and_upsert_only():
     text = SCRIPT.read_text()
     assert "nohup" not in text
     assert "sync_prod.py" in text
-    assert 'AUTHORIZATION_ID="OP-RECON-standing-daily-sync"' in text
+    assert 'AUTHORIZATION_ID="OP-RECON-standing-daily-sync-v2"' in text
     assert ".prod-upsert-${RUN_DATE}.lock" in text
     assert "daily_sync_terminal.py" in text
 
