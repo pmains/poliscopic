@@ -17,8 +17,8 @@ Supports:
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
-import os
 from pathlib import Path
 from flask import Blueprint, render_template, request, jsonify, Response
 
@@ -206,20 +206,48 @@ def api_reload():
 def export_training_data():
     """Export completed annotations as training data (JSONL format).
 
-    Each line is one annotated item with {text, spans[]} for model training.
+    Each line has text, unchanged human spans, and meta with annotation status,
+    source field, schema version and negative-example flag. Reviewed empty span
+    lists are confirmed negatives; absent/malformed lists are never inferred to
+    be negatives. Headers report total, positive, negative and span counts plus
+    the SHA-256 of the exact exported bytes. Invalid source records return 422
+    rather than silently producing a partial training dataset.
     """
     data = _load_sample()
     items = data.get("items", [])
-
-    completed = [it for it in items
-                 if it.get("annotation_status") == "reviewed"
-                 and it.get("human_spans")]
-
+    if not isinstance(items, list):
+        return jsonify({"ok": False, "error": "Annotation items must be a list"}), 422
     lines = []
-    for it in completed:
+    positive_count = negative_count = span_count = 0
+    seen_ids = set()
+    for index, it in enumerate(items):
+        if not isinstance(it, dict) or it.get("annotation_status") not in (
+                "reviewed", "in_progress", "unreviewed"):
+            return jsonify({"ok": False, "error": f"Item {index}: invalid annotation status"}), 422
+        if it["annotation_status"] != "reviewed":
+            continue
+        retained = it.get("text")
+        spans = it.get("human_spans")
+        sample_id = it.get("sample_id")
+        if (not isinstance(retained, str) or not isinstance(spans, list)
+                or not isinstance(sample_id, int) or isinstance(sample_id, bool)
+                or sample_id <= 0 or sample_id in seen_ids):
+            return jsonify({"ok": False, "error": f"Item {index}: invalid reviewed text, spans or sample ID"}), 422
+        seen_ids.add(sample_id)
+        for span_index, span in enumerate(spans):
+            start = span.get("start") if isinstance(span, dict) else None
+            end = span.get("end") if isinstance(span, dict) else None
+            if (not isinstance(start, int) or isinstance(start, bool)
+                    or not isinstance(end, int) or isinstance(end, bool)
+                    or not 0 <= start < end <= len(retained)
+                    or span.get("text") != retained[start:end]):
+                return jsonify({"ok": False, "error": f"Item {index}, span {span_index}: invalid human span"}), 422
+        positive_count += bool(spans)
+        negative_count += not spans
+        span_count += len(spans)
         # Build training record: text + character-level spans
         record = {
-            "text": it["text"],
+            "text": retained,
             "spans": [
                 {"start": s["start"], "end": s["end"], "text": s["text"]}
                 for s in it["human_spans"]
@@ -229,14 +257,25 @@ def export_training_data():
                 "jurisdiction": it.get("jurisdiction"),
                 "meeting_type": it.get("meeting_type"),
                 "meeting_date": it.get("meeting_date"),
+                "annotation_status": "reviewed",
+                "annotation_source": "human_spans",
+                "export_schema_version": "mention-training/2.0",
+                "negative_example": not spans,
             },
         }
         lines.append(json.dumps(record, default=str))
 
+    payload = "\n".join(lines)
     return Response(
-        "\n".join(lines),
+        payload,
         mimetype="application/jsonl",
         headers={
-            "Content-Disposition": f"attachment; filename=mention-training-{len(completed)}items.jsonl"
+            "Content-Disposition": f"attachment; filename=mention-training-{len(lines)}items.jsonl",
+            "X-Annotation-Export-Schema": "mention-training/2.0",
+            "X-Annotation-Items": str(len(lines)),
+            "X-Annotation-Positive-Items": str(positive_count),
+            "X-Annotation-Negative-Items": str(negative_count),
+            "X-Annotation-Spans": str(span_count),
+            "X-Annotation-Export-SHA256": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
         },
     )

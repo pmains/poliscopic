@@ -1,8 +1,9 @@
 """Public newsletter signup / manage routes.
 
 Security controls (OWASP-oriented):
-* CSRF: session-bound token on every POST form, compared with
-  hmac.compare_digest (Flask-WTF is globally disabled in this app).
+* CSRF: a session-bound newsletter token on every POST form, compared with
+  hmac.compare_digest. The blueprint is deliberately exempt from global
+  Flask-WTF because this independently tested protocol predates that layer.
 * Anti-bot: honeypot field (auto-filled by naive bots → silent fake
   success), time-trap (submit < 2.5s after page render → rejected),
   and DB-backed per-email / per-IP rate limits.
@@ -18,12 +19,10 @@ import hmac
 import logging
 import secrets
 import time
-from datetime import datetime, timezone
 
-from flask import (Blueprint, render_template, request, redirect,
-                   url_for, abort, session)
+from flask import Blueprint, render_template, request, abort, session
 
-from db.core import get_session
+from db.core import session_scope, transaction_scope
 from newsletter_svc import (NEWSLETTER_TOPICS, VALID_TOPICS, normalize_email,
                             create_pending_subscriber, confirm_subscriber_by_email,
                             set_topics_by_email, unsubscribe_by_email,
@@ -193,10 +192,14 @@ def landing():
 def subscribe():
     # Honeypot: bots fill the hidden field — answer success, do nothing.
     if request.form.get(HONEYPOT_FIELD):
-        _hs = get_session()
-        log_submit(_hs, "honeypot-hit@poliscopic.invalid", _client_ip(),
-                   kind="subscribe", note="honeypot-hit")
-        _hs.close()
+        with transaction_scope() as db_session:
+            log_submit(
+                db_session,
+                "honeypot-hit@poliscopic.invalid",
+                _client_ip(),
+                kind="subscribe",
+                note="honeypot-hit",
+            )
         return _success_page()
     if not _csrf_ok(request.form.get("csrf_token")):
         abort(400)
@@ -228,16 +231,13 @@ def subscribe():
                                error="Choose at least one newsletter.",
                                prev_email=email[:EMAIL_MAX])
 
-    s = get_session()
-    if rate_limited(s, email, _client_ip(), kind="subscribe"):
-        s.close()
-        return _success_page()   # silent: don't reveal the limit
-    log_submit(s, email, _client_ip(), kind="subscribe", note="ok")
+    with transaction_scope() as db_session:
+        if rate_limited(db_session, email, _client_ip(), kind="subscribe"):
+            return _success_page()   # silent: don't reveal the limit
+        log_submit(db_session, email, _client_ip(), kind="subscribe", note="ok")
 
-    sub = create_pending_subscriber(s, email, topics)
-    already_active = sub.status == "active"
-    s.commit()
-    s.close()
+        sub = create_pending_subscriber(db_session, email, topics)
+        already_active = sub.status == "active"
 
     if already_active:
         # Email already verified — topics updated live; tell them.
@@ -264,10 +264,9 @@ def confirm():
     payload = _verify("confirm")
     if not payload:
         return render_template("newsletter/confirm.html", ok=False)
-    s = get_session()
-    sub = confirm_subscriber_by_email(s, payload["e"])
-    topics = active_topics(sub) if sub else []
-    s.close()
+    with transaction_scope() as db_session:
+        sub = confirm_subscriber_by_email(db_session, payload["e"])
+        topics = active_topics(sub) if sub else []
     return render_template("newsletter/confirm.html", ok=sub is not None,
                            email=payload["e"], topics=topics)
 
@@ -289,15 +288,14 @@ def manage():
             break
     if not payload:
         return render_template("newsletter/manage.html", ok=False)
-    s = get_session()
-    sub = get_by_email(s, payload["e"])
-    if sub is None or sub.status != "active":
-        s.close()
-        return render_template("newsletter/manage.html", ok=False)
-    topics = active_topics(sub)
-    s.close()
+    with session_scope() as db_session:
+        sub = get_by_email(db_session, payload["e"])
+        if sub is None or sub.status != "active":
+            return render_template("newsletter/manage.html", ok=False)
+        topics = active_topics(sub)
+        email = sub.email
     return render_template("newsletter/manage.html", ok=True,
-                           email=sub.email, topics=topics,
+                           email=email, topics=topics,
                            all_topics=NEWSLETTER_TOPICS,
                            manage_token=token,
                            csrf_token=_csrf_token())
@@ -321,9 +319,8 @@ def manage_post():
     action = request.form.get("action", "")
 
     if action == "unsubscribe_all":
-        s = get_session()
-        sub = unsubscribe_by_email(s, email)
-        s.close()
+        with transaction_scope() as db_session:
+            sub = unsubscribe_by_email(db_session, email)
         if sub is None:
             return render_template("newsletter/manage.html", ok=False)
         return render_template("newsletter/unsubscribed.html", email=email,
@@ -336,9 +333,8 @@ def manage_post():
                                manage_token=token,
                                csrf_token=_csrf_token(),
                                error="Choose at least one newsletter.")
-    s = get_session()
-    sub = set_topics_by_email(s, email, topics)
-    s.close()
+    with transaction_scope() as db_session:
+        sub = set_topics_by_email(db_session, email, topics)
     if sub is None:
         return render_template("newsletter/manage.html", ok=False)
     return render_template("newsletter/manage.html", ok=True, email=email,
@@ -356,13 +352,11 @@ def unsubscribe():
         return render_template("newsletter/unsubscribed.html", ok=False)
     email = payload["e"]
     topic = payload.get("t")
-    s = get_session()
-    sub = unsubscribe_by_email(s, email, topic=topic)
-    if sub is None:
-        s.close()
-        return render_template("newsletter/unsubscribed.html", ok=False)
-    remaining = active_topics(sub)   # before the session closes
-    s.close()
+    with transaction_scope() as db_session:
+        sub = unsubscribe_by_email(db_session, email, topic=topic)
+        if sub is None:
+            return render_template("newsletter/unsubscribed.html", ok=False)
+        remaining = active_topics(sub)
     return render_template("newsletter/unsubscribed.html", ok=True,
                            email=email, topic=topic,
                            remaining=remaining,
@@ -384,17 +378,22 @@ def send_manage_link():
                                csrf_token=_csrf_token(),
                                honeypot=HONEYPOT_FIELD,
                                manage_error="Enter a valid email address.")
-    s = get_session()
-    if rate_limited(s, email, _client_ip(), kind="manage-link",
-                    email_per_hour=2, ip_per_hour=6):
-        s.close()
-        return _success_page()
-    log_submit(s, email, _client_ip(), kind="manage-link", note="ok")
-    sub = get_by_email(s, email)
-    s.close()
+    with transaction_scope() as db_session:
+        if rate_limited(
+            db_session,
+            email,
+            _client_ip(),
+            kind="manage-link",
+            email_per_hour=2,
+            ip_per_hour=6,
+        ):
+            return _success_page()
+        log_submit(db_session, email, _client_ip(), kind="manage-link", note="ok")
+        sub = get_by_email(db_session, email)
+        is_active = sub is not None and sub.status == "active"
     # Always show the same neutral result whether or not the address is
     # subscribed — prevents address enumeration.
-    if sub is not None and sub.status == "active":
+    if is_active:
         # manage-now = short-lived (24h) reset link, distinct from the
         # 90-day footer manage links inside digests.
         manage_url = make_action_url(email, "manage-now")

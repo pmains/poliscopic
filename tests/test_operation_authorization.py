@@ -481,6 +481,41 @@ def test_interlock_allows_with_valid_authorization(sandbox):
     assert verdict["authorization_issuance"] == "validated"
 
 
+def test_interlock_allows_exact_code_release_mode(sandbox):
+    now = datetime.now(timezone.utc)
+    plan = oa.build_plan(
+        operation="OP-CODE",
+        operation_id="code-release-test",
+        entry_point="scripts/ops/deploy_release.sh",
+        scope=["app.py"],
+        code_paths=["pub.py", "gate.py"],
+        rollback_owner="Pete",
+        not_before=now - timedelta(minutes=1),
+        not_after=now + timedelta(days=1),
+        target="production",
+        mode="code",
+    )
+    oa.write_plan(plan)
+    oa.record_authorization(
+        plan,
+        verbatim_approval="I approve this code release.",
+        author="Pete",
+        mode="single-use",
+        max_uses=1,
+    )
+
+    verdict = interlock.check(
+        "OP-CODE",
+        entry_point="scripts/ops/deploy_release.sh",
+        scope=["app.py"],
+        mode="code",
+        authorization_id="code-release-test",
+    )
+
+    assert verdict["status"] == "ALLOWED"
+    assert verdict["authorization"]["operation_id"] == "code-release-test"
+
+
 def test_terminal_accounted_interlock_refuses_without_daily_evidence(sandbox):
     plan = _plan()
     oa.write_plan(plan)

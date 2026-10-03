@@ -72,6 +72,7 @@ SCHEDULED_SOURCES: tuple[ScheduledSource, ...] = (
         "A",
         "serial",
         "tempe",
+        adapter_module="scraper.jurisdictions.tempe_subcommittees_adapter",
         accepts_date_range=False,
     ),
     # Group B: primary HTTP sources plus retained legacy overlap.
@@ -152,6 +153,7 @@ SCHEDULED_SOURCES: tuple[ScheduledSource, ...] = (
         "C",
         "parallel",
         "phoenix",
+        adapter_module="scraper.jurisdictions.phoenix_planning_adapter",
         accepts_date_range=False,
     ),
     ScheduledSource(
@@ -164,7 +166,13 @@ SCHEDULED_SOURCES: tuple[ScheduledSource, ...] = (
         accepts_date_range=False,
     ),
     ScheduledSource("avondale", "C", "parallel", "avondale"),
-    ScheduledSource("tolleson", "C", "parallel", "tolleson"),
+    ScheduledSource(
+        "tolleson",
+        "C",
+        "parallel",
+        "tolleson",
+        adapter_module="scraper.jurisdictions.tolleson",
+    ),
     ScheduledSource(
         "fountain-hills",
         "C",
@@ -210,7 +218,13 @@ SCHEDULED_SOURCES: tuple[ScheduledSource, ...] = (
         cli_command="buckeye",
     ),
     # Group D: lower-frequency and secondary sources.
-    ScheduledSource("el-mirage", "D", "parallel", "el-mirage"),
+    ScheduledSource(
+        "el-mirage",
+        "D",
+        "parallel",
+        "el-mirage",
+        adapter_module="scraper.jurisdictions.el_mirage_adapter",
+    ),
     ScheduledSource(
         "paradise-valley",
         "D",

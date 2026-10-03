@@ -88,10 +88,11 @@ brew install tesseract      # macOS — OCR with word boxes/confidence
 ```
 
 `pyproject.toml` records supported Python versions, dependency groups, and
-quality-tool configuration. During the package-layout migration it is
-intentionally metadata-only; continue using the existing repository entry
-points and `requirements.txt` rather than `pip install .` as an application
-deployment mechanism.
+quality-tool configuration. `uv sync --frozen` installs the canonical
+`src/poliscopic` package and the locked core environment; use
+`uv sync --frozen --extra dev` for tests and quality tools. Root application
+and command files remain compatibility/deployment shims while their
+implementations migrate into the package in bounded slices.
 
 ### Dependencies
 

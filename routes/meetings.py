@@ -2,18 +2,18 @@
 
 import logging
 from datetime import date
+from functools import wraps
 from typing import Optional
 
-from flask import Blueprint, render_template, request, redirect, jsonify
+from flask import Blueprint, render_template, request
 from sqlalchemy import select, func, or_, text as sa_text, and_
-from sqlalchemy.orm import Session
 
 from db import (
-    get_session, Meeting, AgendaItem, SupportingDocument,
-    AgendaItemVote, MemberVote, Supervisor, MeetingMember,
-    PZItemDetail, BodyMembership, Person, _enhance_member_for_template,
-    Case, CaseEvent, Jurisdiction, PublicBody,
+    Meeting, AgendaItem, SupportingDocument,
+    AgendaItemVote, MemberVote, PZItemDetail, Person,
+    CaseEvent, Jurisdiction, PublicBody,
 )
+from poliscopic.db.core import session_scope
 from routes import SYNC_STATUS_BADGES, _cache
 
 
@@ -45,6 +45,16 @@ _JUR_DISPLAY = {
     "Tolleson": "Tolleson",
     "Valley Metro": "Valley Metro",
 }
+
+
+def _scoped_read(view):
+    """Inject one read session and close it on every return or exception."""
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        with session_scope() as session:
+            return view(session, *args, **kwargs)
+
+    return wrapped
 
 
 _BODY_ABBREV = {
@@ -98,7 +108,6 @@ _BODY_ABBREV = {
     "Valley Metro Board of Directors": "VM Board",
     "Valley Metro Procurement": "VM Procurement",
     "Joint Boards Subcommittee": "VM Joint Boards",
-    "Management Committee": "Mgmt Comm",
 }
 
 
@@ -201,9 +210,13 @@ def _get_calendar_grid(year: int, month: int) -> list[list[dict]]:
 
 
 
-def get_distinct_meeting_types(body: Optional[str] = None, jurisdiction: Optional[str] = None) -> list[str]:
+@_scoped_read
+def get_distinct_meeting_types(
+    session,
+    body: Optional[str] = None,
+    jurisdiction: Optional[str] = None,
+) -> list[str]:
     """Get all distinct meeting_type values from the database, optionally filtered by body/jurisdiction."""
-    session = get_session()
     q = select(Meeting.meeting_type).distinct().order_by(Meeting.meeting_type)
 
     # Filter by jurisdiction if given
@@ -246,9 +259,9 @@ def get_distinct_meeting_types(body: Optional[str] = None, jurisdiction: Optiona
             # Mesa bodies (Legistar)
             "mesa-city-council": "mesa-city-council", "mesa city council": "mesa-city-council",
             "mesa-pz": "mesa-pz", "mesa planning": "mesa-pz", "mesa planning zoning": "mesa-pz", "mesa-planning-zoning": "mesa-pz",
-            "mesa-design-review-board": "mesa-design-review-board", "mesa design review board": "mesa-design-review-board", "mesa-design-review-board": "mesa-design-review-board",
-            "mesa-board-of-adjustment": "mesa-board-of-adjustment", "mesa board of adjustment": "mesa-board-of-adjustment", "mesa-board-of-adjustment": "mesa-board-of-adjustment",
-            "mesa-historic-preservation-board": "mesa-historic-preservation-board", "mesa historic preservation board": "mesa-historic-preservation-board", "mesa-historic-preservation-board": "mesa-historic-preservation-board",
+            "mesa-design-review-board": "mesa-design-review-board", "mesa design review board": "mesa-design-review-board",
+            "mesa-board-of-adjustment": "mesa-board-of-adjustment", "mesa board of adjustment": "mesa-board-of-adjustment",
+            "mesa-historic-preservation-board": "mesa-historic-preservation-board", "mesa historic preservation board": "mesa-historic-preservation-board",
             "mesa-cadence": "mesa-cadence", "mesa-cadence-cfd": "mesa-cadence",
             "mesa-eastmark1": "mesa-eastmark1", "mesa-eastmark-cfd-1": "mesa-eastmark1",
             "mesa-eastmark2": "mesa-eastmark2", "mesa-eastmark-cfd-2": "mesa-eastmark2",
@@ -309,7 +322,6 @@ def get_distinct_meeting_types(body: Optional[str] = None, jurisdiction: Optiona
             q = q.where(Meeting.body == body)
 
     rows = session.execute(q).scalars().all()
-    session.close()
     return [r for r in rows if r]
 
 
@@ -339,7 +351,9 @@ def _strip_jurisdiction(body_name: str) -> str:
     return body_name
 
 
+@_scoped_read
 def get_filtered_meetings(
+    session,
     body: Optional[str] = None,
     meeting_type: Optional[str] = None,
     start_date: Optional[str] = None,
@@ -354,8 +368,6 @@ def get_filtered_meetings(
 
     Returns (meetings_list, total_count, page, total_pages).
     """
-    session = get_session()
-
     # Build base query (no LIMIT/OFFSET yet)
     base_q = select(
         Meeting.body,
@@ -407,9 +419,9 @@ def get_filtered_meetings(
             # Mesa bodies (Legistar)
             "mesa-city-council": "mesa-city-council", "mesa city council": "mesa-city-council",
             "mesa-pz": "mesa-pz", "mesa planning": "mesa-pz", "mesa planning zoning": "mesa-pz", "mesa-planning-zoning": "mesa-pz",
-            "mesa-design-review-board": "mesa-design-review-board", "mesa design review board": "mesa-design-review-board", "mesa-design-review-board": "mesa-design-review-board",
-            "mesa-board-of-adjustment": "mesa-board-of-adjustment", "mesa board of adjustment": "mesa-board-of-adjustment", "mesa-board-of-adjustment": "mesa-board-of-adjustment",
-            "mesa-historic-preservation-board": "mesa-historic-preservation-board", "mesa historic preservation board": "mesa-historic-preservation-board", "mesa-historic-preservation-board": "mesa-historic-preservation-board",
+            "mesa-design-review-board": "mesa-design-review-board", "mesa design review board": "mesa-design-review-board",
+            "mesa-board-of-adjustment": "mesa-board-of-adjustment", "mesa board of adjustment": "mesa-board-of-adjustment",
+            "mesa-historic-preservation-board": "mesa-historic-preservation-board", "mesa historic preservation board": "mesa-historic-preservation-board",
             "mesa-cadence": "mesa-cadence", "mesa-cadence-cfd": "mesa-cadence",
             "mesa-eastmark1": "mesa-eastmark1", "mesa-eastmark-cfd-1": "mesa-eastmark1",
             "mesa-eastmark2": "mesa-eastmark2", "mesa-eastmark-cfd-2": "mesa-eastmark2",
@@ -569,10 +581,6 @@ def get_filtered_meetings(
             22: ("Apache Junction", "apache-junction"),
             23: ("Fountain Hills", "fountain-hills"),
             19: ("Tucson", "tucson"),
-            20: ("Maricopa Association of Governments (MAG)", "mag"),
-            21: ("Tolleson", "tolleson"),
-            22: ("Apache Junction", "apache-junction"),
-            23: ("Fountain Hills", "fountain-hills"),
             24: ("Wickenburg", "wickenburg"),
             25: ("Valley Metro", "valley-metro"),
         }
@@ -593,8 +601,6 @@ def get_filtered_meetings(
             "item_count": row.item_count,
             "doc_count": row.doc_count,
         })
-    session.close()
-
     total_pages = max(1, (total_count + per_page - 1) // per_page)
     return meetings_list, total_count, page, total_pages
 
@@ -629,7 +635,11 @@ def meetings() -> str:
             "queen-creek": "queen-creek",
             "apache-junction": "apache-junction",
             "fountain-hills": "fountain-hills",
+            "litchfield-park": "litchfield-park",
             "wickenburg": "wickenburg",
+            "youngtown": "youngtown",
+            "flagstaff": "flagstaff",
+            "yuma": "yuma",
         }
         # Body codes are prefixed with jurisdiction (e.g. apache-junction-cc)
         for prefix, jur_slug in body_to_jur.items():
@@ -824,28 +834,30 @@ def calendar_view() -> str:
 def api_bodies() -> str:
     """API endpoint returning jurisdiction and body filter options."""
     """Return JSON of jurisdiction → body options for filter dropdowns."""
-    from db import get_session
-    from sqlalchemy import select, text
+    from sqlalchemy import text
 
-    session = get_session()
-    rows = session.execute(text("""
-        WITH body_jur AS (
-            SELECT DISTINCT m.body,
-                   COALESCE(
-                       (SELECT pb.jurisdiction_id FROM public_bodies pb WHERE pb.body_code = m.body OR pb.id = m.public_body_id LIMIT 1),
-                       m.jurisdiction_id
-                   ) AS jur_id
-            FROM meetings m
-        )
-        SELECT DISTINCT j.slug, j.name,
-                        bj.body AS body_code,
-                        COALESCE(pb.name, bj.body) AS display_name
-        FROM body_jur bj
-        JOIN jurisdictions j ON j.id = bj.jur_id
-        LEFT JOIN public_bodies pb ON pb.body_code = bj.body
-        ORDER BY j.slug, bj.body
-    """)).fetchall()
-    session.close()
+    with session_scope() as session:
+        rows = session.execute(text("""
+            WITH body_jur AS (
+                SELECT DISTINCT m.body,
+                       COALESCE(
+                           (SELECT pb.jurisdiction_id
+                            FROM public_bodies pb
+                            WHERE pb.body_code = m.body
+                               OR pb.id = m.public_body_id
+                            LIMIT 1),
+                           m.jurisdiction_id
+                       ) AS jur_id
+                FROM meetings m
+            )
+            SELECT DISTINCT j.slug, j.name,
+                            bj.body AS body_code,
+                            COALESCE(pb.name, bj.body) AS display_name
+            FROM body_jur bj
+            JOIN jurisdictions j ON j.id = bj.jur_id
+            LEFT JOIN public_bodies pb ON pb.body_code = bj.body
+            ORDER BY j.slug, bj.body
+        """)).fetchall()
 
     result = {}
     for jur_slug, jur_name, body_code, display_name in rows:
@@ -863,10 +875,13 @@ def api_bodies() -> str:
 @meetings_bp.route("/meetings/<path:meeting_id>")
 @meetings_bp.route("/meetings/<body>/<path:meeting_id>")
 @_cache(timeout=120, query_string=True)
-def meeting_detail(meeting_id: str, body: Optional[str] = None) -> str:
+@_scoped_read
+def meeting_detail(
+    session,
+    meeting_id: str,
+    body: Optional[str] = None,
+) -> str:
     """Render the detail page for a single meeting, including agenda items and votes."""
-    session = get_session()
-
     # --- Meeting header ---
     q = select(Meeting).where(Meeting.meeting_id == meeting_id)
     if body:
@@ -874,7 +889,6 @@ def meeting_detail(meeting_id: str, body: Optional[str] = None) -> str:
     meeting = session.execute(q).scalar_one_or_none()
 
     if not meeting:
-        session.close()
         return render_template("meeting_detail.html", meeting_id=meeting_id, meeting=None)
 
     meeting_body_val = meeting.body or "bos"
@@ -911,14 +925,22 @@ def meeting_detail(meeting_id: str, body: Optional[str] = None) -> str:
         )
         .order_by(SupportingDocument.agenda_item_number, SupportingDocument.id)
     ).scalars().all()
-    # Build a lookup: agenda_item_number -> list of item PKs that share that number
+    # Build lookups for both the stable source key and the display number.
+    # The source key is authoritative; the number fallback supports older
+    # scrapers that did not persist an item key on supporting documents.
+    source_key_to_item_id: dict[str, int] = {}
     num_to_item_ids: dict[str, list[int]] = {}
     for ai in items:
+        if ai.agenda_item_id:
+            source_key_to_item_id[str(ai.agenda_item_id)] = ai.id
         key = str(ai.agenda_item_number) if ai.agenda_item_number is not None else ""
         if key:
             num_to_item_ids.setdefault(key, []).append(ai.id)
     for d in docs:
-        if not d.agenda_item_number or d.agenda_item_number == "0" or d.agenda_item_number == 0:
+        source_target = source_key_to_item_id.get(str(d.agenda_item_id or ""))
+        if source_target is not None:
+            docs_by_item.setdefault(source_target, []).append(d)
+        elif not d.agenda_item_number or d.agenda_item_number == "0" or d.agenda_item_number == 0:
             meeting_docs.append(d)
         else:
             # Assign to the last item with this number (sub-items appear after parent)
@@ -1064,8 +1086,6 @@ def meeting_detail(meeting_id: str, body: Optional[str] = None) -> str:
         else:
             item_entities.setdefault(str(em_number), []).append(entry)
 
-    session.close()
-
     badge = SYNC_STATUS_BADGES.get((meeting.sync_status or "").lower(), "secondary")
 
     # Item-specific deep link
@@ -1099,48 +1119,58 @@ def meeting_detail(meeting_id: str, body: Optional[str] = None) -> str:
 @_cache(timeout=120)
 def document_detail(doc_id: int) -> str:
     """Show the full text of a supporting document."""
-    session = get_session()
-    doc = session.execute(
-        select(SupportingDocument).where(SupportingDocument.id == doc_id)
-    ).scalar_one_or_none()
-
-    if not doc:
-        session.close()
-        return render_template("404.html"), 404
-
-    # Fetch the associated meeting for context
-    meeting = session.execute(
-        select(Meeting).where(Meeting.id == doc.meeting_db_id)
-    ).scalar_one_or_none()
-
-    meeting_info = None
-    if meeting:
-        jur = session.execute(
-            select(Jurisdiction).where(Jurisdiction.id == meeting.jurisdiction_id)
+    with session_scope() as session:
+        row = session.execute(
+            select(SupportingDocument).where(SupportingDocument.id == doc_id)
         ).scalar_one_or_none()
-        meeting_info = {
-            "body": meeting.body,
-            "meeting_id": meeting.meeting_id,
-            "meeting_date": meeting.meeting_date,
-            "meeting_type": meeting.meeting_type,
-            "jurisdiction_name": jur.name if jur else "",
-        }
 
-    session.close()
+        if not row:
+            return render_template("404.html"), 404
+
+        doc = {
+            "agenda_item_id": row.agenda_item_id,
+            "agenda_item_number": row.agenda_item_number,
+            "body": row.body,
+            "document_title": row.document_title,
+            "document_url": row.document_url,
+            "meeting_id": row.meeting_id,
+            "text_extraction_method": row.text_extraction_method,
+        }
+        text_content = row.text_content or ""
+
+        # Fetch the associated meeting for context.
+        meeting = session.execute(
+            select(Meeting).where(Meeting.id == row.meeting_db_id)
+        ).scalar_one_or_none()
+
+        meeting_info = None
+        if meeting:
+            jur = session.execute(
+                select(Jurisdiction).where(
+                    Jurisdiction.id == meeting.jurisdiction_id
+                )
+            ).scalar_one_or_none()
+            meeting_info = {
+                "body": meeting.body,
+                "meeting_id": meeting.meeting_id,
+                "meeting_date": meeting.meeting_date,
+                "meeting_type": meeting.meeting_type,
+                "jurisdiction_name": jur.name if jur else "",
+            }
+
     return render_template(
         "document.html",
         doc=doc,
         meeting=meeting_info,
-        text_content=doc.text_content or "",
+        text_content=text_content,
     )
 
 
 @meetings_bp.route("/c-number/<c_number_base>")
-def c_number_revisions(c_number_base: str) -> str:
+@_scoped_read
+def c_number_revisions(session, c_number_base: str) -> str:
     """Render a page showing all revisions of a given case number."""
     """Show all agenda items sharing the same c_number_base."""
-    session = get_session()
-
     items = session.execute(
         select(
             AgendaItem.meeting_id,
@@ -1170,7 +1200,6 @@ def c_number_revisions(c_number_base: str) -> str:
     doc_keys = [(r.meeting_id, r.agenda_item_number) for r in items]
     docs_by_item: dict[str, list] = {}
     if doc_keys:
-        from sqlalchemy import or_ as _or
         conditions = [
             (SupportingDocument.body == Meeting.body) &
             (SupportingDocument.meeting_id == k[0]) &
@@ -1224,8 +1253,6 @@ def c_number_revisions(c_number_base: str) -> str:
                 "member_votes": member_votes,
             }
 
-    session.close()
-
     return render_template(
         "c_number.html",
         c_number_base=c_number_base,
@@ -1237,16 +1264,15 @@ def c_number_revisions(c_number_base: str) -> str:
 
 @meetings_bp.route("/cases/<path:case_number>")
 @_cache(timeout=120)
-def case_detail(case_number: str) -> str:
+@_scoped_read
+def case_detail(session, case_number: str) -> str:
     """Show all meetings, agenda items, and docs associated with a case number."""
     from db import Case as CaseModel, CaseEvent as CaseEventModel, PZItemDetail
-    session = get_session()
     case = session.execute(
         select(CaseModel).where(CaseModel.case_number == case_number.upper())
     ).scalar_one_or_none()
 
     if not case:
-        session.close()
         return render_template("404.html"), 404
 
     # All case events with meeting metadata
@@ -1266,8 +1292,6 @@ def case_detail(case_number: str) -> str:
         .order_by(Meeting.meeting_date)
     ).all()
 
-    session.close()
-
     return render_template(
         "case_detail.html",
         case=case,
@@ -1276,16 +1300,15 @@ def case_detail(case_number: str) -> str:
     )
 
 
-def get_related_case_events(case_number: str) -> list[dict]:
+@_scoped_read
+def get_related_case_events(session, case_number: str) -> list[dict]:
     """Fetch case events related to a case number for the meeting detail template."""
     """Get all CaseEvents for a case number, with meeting metadata."""
     from db import Case as CaseModel
-    session = get_session()
     case = session.execute(
         select(CaseModel).where(CaseModel.case_number == case_number.upper())
     ).scalar_one_or_none()
     if not case:
-        session.close()
         return []
     events = session.execute(
         select(CaseEvent, Meeting.meeting_date, Meeting.meeting_type, Meeting.meeting_title)
@@ -1307,7 +1330,6 @@ def get_related_case_events(case_number: str) -> list[dict]:
             "agenda_item_id": ev.agenda_item_id,
             "notes": ev.notes,
         })
-    session.close()
     return result
 
 
@@ -1323,5 +1345,3 @@ def get_related_pz_items_for_case(case_number: str) -> list[dict]:
     """Get PZ-related events for a case number."""
     events = get_related_case_events(case_number)
     return [e for e in events if e.get("source_label") == "PZ"]
-
-

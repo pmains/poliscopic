@@ -179,6 +179,16 @@ def test_cli_recognizes_every_scheduled_command_from_registry():
         ("apache-junction", "scraper.jurisdictions.apache_junction"),
         ("queen-creek", "scraper.jurisdictions.queen_creek"),
         ("paradise-valley", "scraper.jurisdictions.paradise_valley"),
+        ("tolleson", "scraper.jurisdictions.tolleson"),
+        ("el-mirage", "scraper.jurisdictions.el_mirage_adapter"),
+        (
+            "tempe-subcommittees",
+            "scraper.jurisdictions.tempe_subcommittees_adapter",
+        ),
+        (
+            "phoenix-planning",
+            "scraper.jurisdictions.phoenix_planning_adapter",
+        ),
     ],
 )
 def test_standalone_adapter_ownership_is_loadable(command, module_name):
@@ -199,6 +209,10 @@ def test_standalone_adapter_ownership_is_loadable(command, module_name):
         "apache-junction",
         "queen-creek",
         "paradise-valley",
+        "tolleson",
+        "el-mirage",
+        "tempe-subcommittees",
+        "phoenix-planning",
     ],
 )
 def test_main_dispatches_standalone_sources_through_registry(monkeypatch, source):

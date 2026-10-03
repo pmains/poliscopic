@@ -70,14 +70,13 @@ include = ["poliscopic*"]
 namespaces = false
 
 [tool.uv]
-# Phase 4 uses uv as a cross-platform resolver/locker. The application continues
-# to run from the existing flat checkout until every runtime slice has migrated.
-# Packaging the currently migrated library modules must not make `uv sync`
-# replace the production entry point or the developer's existing environment.
-package = false
-required-version = ">=0.11.16,<0.12"
+# uv owns the reproducible cross-platform environment and installs the canonical
+# ``src/poliscopic`` package. Root application and command files remain explicit
+# compatibility/deployment shims while their implementations migrate by slice.
+package = true
+required-version = ">=0.12.23,<0.13"
 environments = [
-    "python_version >= '3.10' and python_version < '3.15'",
+    "python_version >= '3.10' and python_version < '3.15' and sys_platform != 'emscripten'",
 ]
 
 [tool.pytest.ini_options]

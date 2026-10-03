@@ -192,17 +192,25 @@ def test_production_wrapper_refuses_and_cannot_be_driven_by_the_caller(tmp_path)
     fixture = _fixture(tmp_path)
     env = dict(os.environ)
     env["POLISCOPIC_DEPLOY_HOST"] = "not-contacted.invalid"
-    env.pop("POLISCOPIC_DEPLOY_PATHS", None)
+    env["POLISCOPIC_DEPLOY_PATHS"] = "app.py"
+    env["POLISCOPIC_CODE_AUTHORIZATION_ID"] = "missing-code-release"
     # Legacy fixture knobs must have no effect on the production wrapper.
     env["POLISCOPIC_FIXTURE_ROOT"] = str(fixture["fix"])
     env["POLISCOPIC_APP_DIR"] = str(fixture["app"])
+    # Hermetic: a real authorization under data/release must never be visible here,
+    # or this refusal would depend on local state.
+    env["POLISCOPIC_RELEASE_DIR"] = str(fixture["fix"] / "no-release")
+    env["POLISCOPIC_AUDIT_DIR"] = str(fixture["fix"] / "no-audit")
     result = subprocess.run(
         ["bash", str(DEPLOY_SCRIPT)], capture_output=True, text=True,
         env=env, cwd=str(REPO_ROOT), timeout=60,
     )
     assert result.returncode == 3, result.stdout + result.stderr
     assert "REFUSED" in result.stderr
-    assert "AUTHORIZATION_DISABLED" in result.stderr
+    # Changed 2026-09-21: the refusal is now attributed to the specific gap — no
+    # authorization artifact for OP-CODE — rather than the former blanket
+    # "issuance is disabled". The leak checks below are the real invariant.
+    assert "AUTHORIZATION_MISSING" in result.stderr
     # The fixture app was never touched.
     assert (fixture["app"] / "state").read_text().strip() == "old"
     assert not (fixture["app"] / ".staging").exists()

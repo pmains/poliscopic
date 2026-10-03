@@ -290,14 +290,6 @@ async def main() -> int:
         )
         return finder.print_report(items, hearing_meetings, _hargs.json, _hargs.jurisdiction)
 
-    if args.source == "tempe-subcommittees" and args.sync:
-        from scraper.jurisdictions.tempe.subcommittees import main as tempe_sub_main
-        import sys as _sys
-        # Extract remaining args after 'tempe-subcommittees' for the module parser
-        remaining = _sys.argv[_sys.argv.index('tempe-subcommittees') + 1:]
-        _sys.argv = ['tempe-subcommittees'] + remaining
-        return tempe_sub_main()
-
     if args.source == "phoenix-aem" and args.sync:
         from scraper.jurisdictions.phoenix_aem import fetch_all_notice_bodies, search_and_convert
         from db import get_session, init_db, replace_meeting_data_safe, Meeting as MeetingModel
@@ -493,28 +485,6 @@ async def main() -> int:
         session.close()
         elapsed = time.time() - start_ts
         print(f"{_pdt.datetime.now().strftime('%H:%M:%S')} Done. {total_fetched} results, {total_new} new, {skipped_sentinels} sentinel/non-meeting skipped in {elapsed:.0f}s")
-        return 0
-
-    if args.source == "phoenix-planning" and args.sync:
-        from scraper.jurisdictions.phoenix_planning import sync_all
-        from db import get_session, init_db
-        import datetime as _pdt
-
-        init_db()
-        session = get_session()
-        force = getattr(args, "force", False)
-
-        results = sync_all(session, force=force)
-
-        session.close()
-        ts = _pdt.datetime.now().strftime("%H:%M:%S")
-        events = results.get("events", {})
-        staff = results.get("staff_reports", {})
-        pud = results.get("pud_cases", {})
-        print(f"{ts} Phoenix planning sync complete: "
-              f"{events.get('synced', 0)}/{events.get('fetched', 0)} events, "
-              f"{staff.get('docs_synced', 0)}/{staff.get('fetched', 0)} staff docs, "
-              f"{pud.get('docs_synced', 0)}/{pud.get('fetched', 0)} PUD docs")
         return 0
 
     if args.init_db:
@@ -2754,108 +2724,6 @@ async def main() -> int:
         print("Synced %d Peoria meeting(s)" % meeting_count)
         return 0
 
-    # ── El Mirage sync (via AgendaQuick) ──
-    if args.source == "el-mirage" and args.sync:
-        import datetime as _dt
-        from db import get_session, init_db, update_sync_status, replace_meeting_data_safe
-        from scraper.jurisdictions.el_mirage import (
-            search_el_mirage_meetings, parse_agenda_items,
-            fetch_page, BASE_URL, ORG_ID,
-            DEFAULT_BODY_SLUGS,
-        )
-        from scraper.platforms.destiny_common import fetch_agenda_memo_docs
-        init_db()
-        body_slugs_str = getattr(args, "bodies", None) or ",".join(DEFAULT_BODY_SLUGS)
-        body_slugs = [s.strip() for s in body_slugs_str.split(",") if s.strip()]
-        _month_val = getattr(args, "month", None)
-        _year_val = getattr(args, "year", None)
-        if _month_val:
-            year = int(_month_val.split("-")[0])
-        elif _year_val:
-            year = int(_year_val)
-        else:
-            year = _dt.date.today().year
-        print("Searching El Mirage meetings for %d..." % year)
-        meetings = search_el_mirage_meetings(year, body_slugs=body_slugs)
-        if args.limit:
-            meetings = meetings[:args.limit]
-        if not meetings:
-            print("No El Mirage meetings found for %d." % year)
-            return 0
-        # Post-filter by month if --month was specified
-        if _month_val:
-            _before = len(meetings)
-            meetings = [m for m in meetings if m.get("meeting_date", "").startswith(_month_val)]
-            print("Filtered to %d meeting(s) in %s" % (len(meetings), _month_val))
-            if not meetings:
-                return 0
-        print("Found %d El Mirage meeting(s)" % len(meetings))
-        session = get_session()
-        total_items = 0
-        meeting_count = len(meetings)
-        from db import Meeting as MeetingModel
-        from sqlalchemy import select
-        for idx, m in enumerate(meetings, 1):
-            meeting_id = m["meeting_id"]
-            meeting_date = m["meeting_date"]
-            body_code = m.get("body_code", "el-mirage-cc")
-            agenda_url = m.get("agenda_url", "")
-            meeting_type = m.get("meeting_type", "")
-            meeting_title = m.get("body_name", "")
-            meeting_dict = {"meeting_id": meeting_id, "meeting_date": meeting_date, "meeting_type": meeting_type, "meeting_title": meeting_title, "source_url": agenda_url}
-            existing = session.execute(select(MeetingModel).where(MeetingModel.body == body_code, MeetingModel.meeting_id == meeting_id)).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not args.force:
-                print("  [%d/%d] %s %s: already synced" % (idx, meeting_count, meeting_id, meeting_date))
-                continue
-            try:
-                html = fetch_page(agenda_url)
-                items = parse_agenda_items(html, meeting_id)
-                if not items:
-                    replace_meeting_data_safe(session, body_code, meeting_id, meeting_dict, [])
-                    print("  [%d/%d] %s %s: no items" % (idx, meeting_count, meeting_id, meeting_date))
-                    continue
-
-                # ── Extract supporting docs from Destiny memo pages ──
-                supp_docs = []
-                seen_memo_urls: set[str] = set()
-                for it in items:
-                    memo_url = it.get("agenda_item_url", "") or it.get("source_url", "")
-                    if memo_url and memo_url not in seen_memo_urls:
-                        seen_memo_urls.add(memo_url)
-                        try:
-                            docs = fetch_agenda_memo_docs(memo_url, timeout=15)
-                            for doc in docs:
-                                an = it.get("agenda_item_number", "")
-                                doc["agenda_item_id"] = "0"
-                                doc["agenda_item_number"] = an
-                                supp_docs.append(doc)
-                        except Exception as de:
-                            log.debug("Memo docs failed for %s item %s: %s",
-                                      meeting_id, it.get("agenda_item_number", ""), de)
-
-                agenda_item_dicts = []
-                seen_packet_ids: set[str] = set()
-                for it in items:
-                    an = it.get("agenda_item_number", "")
-                    item_url = it.get("agenda_item_url", "") or it.get("source_url", "")
-                    item_id = body_code + "-" + meeting_id + "_" + an
-                    if item_id in seen_packet_ids:
-                        continue
-                    seen_packet_ids.add(item_id)
-                    agenda_item_dicts.append({"agenda_item_id": item_id, "meeting_id": meeting_id, "agenda_item_number": an, "agenda_item_title": it.get("agenda_item_title", ""), "agenda_item_text": it.get("agenda_item_text", ""), "agenda_item_url": item_url, "source_body": body_code, "source_url": agenda_url, "sort_order": it.get("sort_order", 0)})
-                replace_meeting_data_safe(
-                    session, body_code, meeting_id, meeting_dict,
-                    agenda_item_dicts, supporting_doc_dicts=supp_docs,
-                )
-                total_items += len(agenda_item_dicts)
-                doc_summary = f" ({len(supp_docs)} doc(s))" if supp_docs else ""
-                print("  [%d/%d] %s %s: %d item(s)%s" % (idx, meeting_count, meeting_id, meeting_date, len(agenda_item_dicts), doc_summary))
-            except Exception as e:
-                log.error("Failed El Mirage meeting %s: %s", meeting_id, e)
-        session.close()
-        print("Synced %d El Mirage items across %d meeting(s)" % (total_items, meeting_count))
-        return 0
-
     # ── Wickenburg sync (via Destiny/AgendaQuick) ──
     if args.source == "wickenburg" and args.sync:
         import datetime as _dt
@@ -2951,126 +2819,6 @@ async def main() -> int:
                 log.error("Failed Wickenburg meeting %s: %s", meeting_id, e)
         session.close()
         print("Synced %d Wickenburg items across %d meeting(s)" % (total_items, meeting_count))
-        return 0
-
-    # ── Tolleson sync (via CivicClerk) ──
-    if args.source == "tolleson" and args.sync:
-        import datetime as _dt
-        from db import get_session, init_db, replace_meeting_data_safe
-        from scraper.platforms.civicclerk import CivicClerkConfig, search_meetings, fetch_meeting_items
-
-        tolleson_config = CivicClerkConfig(
-            subdomain="tollesonaz",
-            body_map={
-                "City Council": ("tolleson-cc", "tolleson-cc", "City Council"),
-                "Planning and Zoning Commission": ("tolleson-pz", "tolleson-pz", "Planning and Zoning Commission"),
-                "Fire Public Safety Personnel Retirement Board": ("tolleson-psprs-fire", "tolleson-psprs-fire", "Fire PSPRS Board"),
-                "Police Public Safety Personnel Retirement Board": ("tolleson-psprs-police", "tolleson-psprs-police", "Police PSPRS Board"),
-            },
-            default_body="tolleson-cc",
-        )
-
-        init_db()
-
-        year_val = getattr(args, "year", None)
-        year = int(year_val) if year_val else _dt.date.today().year
-        start_date = getattr(args, "start_date", None) or f"{year-1}-01-01"
-        end_date = getattr(args, "end_date", None) or f"{year}-12-31"
-
-        print(f"Searching Tolleson CivicClerk meetings from {start_date} to {end_date}...")
-        meetings = search_meetings(tolleson_config, start_date=start_date)
-        if not meetings:
-            print("No Tolleson meetings found.")
-            return 0
-
-        # Filter by date range
-        if start_date:
-            meetings = [m for m in meetings if m.get("meeting_date", "") >= start_date]
-        if end_date:
-            meetings = [m for m in meetings if m.get("meeting_date", "") <= end_date]
-        if not meetings:
-            print("No Tolleson meetings found in date range.")
-            return 0
-        print(f"Found {len(meetings)} Tolleson meeting(s)")
-
-        if getattr(args, "limit", 0):
-            meetings = meetings[:args.limit]
-
-        session = get_session()
-        total_items = 0
-        meeting_count = len(meetings)
-        from db import Meeting as MeetingModel
-        from sqlalchemy import select
-
-        for idx, m in enumerate(meetings, 1):
-            event_id = m.get("event_id")
-            if not event_id:
-                event_id = int(m.get("meeting_id", 0))
-            meeting_date = m.get("meeting_date", "")
-            body_code = m.get("body_code", "tolleson-cc")
-            meeting_type = m.get("meeting_type", "")
-            meeting_title = m.get("meeting_title", "")
-            source_url = m.get("source_url", "")
-
-            meeting_dict = {
-                "meeting_id": str(event_id), "meeting_date": meeting_date,
-                "meeting_type": meeting_type, "meeting_title": meeting_title,
-                "source_url": source_url,
-            }
-
-            existing = session.execute(
-                select(MeetingModel).where(
-                    MeetingModel.body == body_code,
-                    MeetingModel.meeting_id == str(event_id),
-                )
-            ).scalar_one_or_none()
-            if existing and existing.sync_status == "complete" and (existing.item_count_actual or 0) > 0 and not getattr(args, "force", False):
-                print(f"  [{idx}/{meeting_count}] {event_id} {meeting_date}: already synced, {existing.item_count_actual or 0} items")
-                total_items += existing.item_count_actual or 0
-                continue
-
-            try:
-                # ── Extract agenda items and docs from Meetings API ──
-                items, supp_docs = [], []
-                if event_id:
-                    # Need to fetch the individual event to get agendaId
-                    import urllib.request, json
-                    evt_url = f"{tolleson_config.api_base}/Events/{event_id}"
-                    evt_req = urllib.request.Request(evt_url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
-                    try:
-                        with urllib.request.urlopen(evt_req, timeout=10) as evt_resp:
-                            evt_data = json.loads(evt_resp.read())
-                        agenda_id = evt_data.get("agendaId", 0)
-                        if agenda_id and agenda_id > 0:
-                            items, supp_docs = fetch_meeting_items(
-                                tolleson_config, event_id, agenda_id,
-                                body_code, meeting_date,
-                            )
-                    except Exception:
-                        pass
-
-                replace_meeting_data_safe(
-                    session, body_code, str(event_id), meeting_dict,
-                    items, supporting_doc_dicts=supp_docs,
-                )
-                total_items += len(items)
-                doc_summary = f" ({len(supp_docs)} doc(s))" if supp_docs else ""
-                ts = _dt.datetime.now().strftime("%H:%M:%S")
-                print(f"{ts} [{idx}/{meeting_count}] {event_id} {meeting_date}: {len(items)} items synced{doc_summary}")
-            except Exception as e:
-                import logging
-                log = logging.getLogger(__name__)
-                log.error("Failed to sync Tolleson meeting %s: %s", event_id, e)
-                import traceback; traceback.print_exc()
-                try:
-                    from db import update_sync_status
-                    update_sync_status(session, body_code, str(event_id), "failed", error=str(e)[:500])
-                    session.commit()
-                except Exception:
-                    pass
-
-        session.close()
-        print(f"Synced {total_items} Tolleson items across {meeting_count} meeting(s)")
         return 0
 
     # ── Avondale sync (via CivicClerk — current) ──

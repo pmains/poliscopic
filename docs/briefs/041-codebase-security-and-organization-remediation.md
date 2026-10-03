@@ -1,6 +1,6 @@
 # 041 — Codebase security and organization remediation
 
-**Status:** 🚧 Phases 1–3 verified; Phases 4 and 6 in bounded migration (2026-10-02)
+**Status:** 🚧 Phases 1–4 verified; Phase 5 adapter migration and Phase 6 decomposition continue (2026-10-03)
 **Owner:** poliscopic agent
 
 ## Objective
@@ -151,6 +151,14 @@ Identity gates, P&Z provenance, session, persistence, SQL safety, and target-
 refusal tests cover the boundary. An offline wheel inspection confirmed the
 initial modules are packaged; setuptools discovery covers adjacent canonical
 modules, and generated checkout build artifacts were removed.
+
+**Result (2026-10-03):** Phase 4 is implemented and verified. The project now
+installs the canonical `src/poliscopic` package through `uv sync --frozen`;
+uv 0.12.23 owns a current 193-package lock and explicitly excludes unsupported
+WebAssembly targets. A frozen development sync succeeded. The rebuilt wheel was
+installed outside the checkout and imported the canonical repository and all 20
+ORM tables. Root application and command files remain explicit compatibility
+shims rather than competing package implementations.
 
 ### Phase 5 — Canonical jurisdiction/source registry
 
@@ -308,6 +316,13 @@ topic-management, unsubscribe, and abuse-log paths own their complete
 transaction through `transaction_scope()`, eliminating the prior split commit
 between rate-limit logging and subscriber updates. The newsletter suite passes
 41 tests, including a service-level assertion that no mutation helper commits.
+
+**Route ownership result (2026-10-03):** Every Flask route blueprint now uses
+owned read or transaction scopes; no blueprint directly opens or manually closes
+a database session. Admin, article, body, meeting, member, newsletter, theme, and
+topic paths have render-after-close and mutation-boundary coverage. The remaining
+Phase 6 work is structural decomposition shared with Phase 5, not hidden route
+session ownership.
 
 ### Phase 7 — Repository boundaries and durable documentation
 

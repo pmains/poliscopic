@@ -36,4 +36,4 @@ nothing to say):
 | 015 | Entity taxonomy + PART_OF layer | ✅ Step 1 + Step 2 done; Step 3 deferred |
 | 016 | Entity pipeline refactor | ✅ Steps 1–2 verified; Steps 3–4 pending |
 | 017 | Knowledge Graph Stage 0 integrity | Draft — awaiting approval |
-| 041 | Codebase security and organization remediation | 🚧 Phase 4 package migration in progress |
+| 041 | Codebase security and organization remediation | 🚧 Phases 1–4 verified; adapter/module decomposition continues |

@@ -85,7 +85,7 @@ ATTEMPT_ALREADY_TERMINAL = "ATTEMPT_ALREADY_TERMINAL"
 # same one.
 SYNC_MODES = ("upsert", "reconcile", "reconcile-only", "schema-only",
               "bootstrap-schema")
-OTHER_MODES = ("repair", "cleanup", "backfill", "schema")
+OTHER_MODES = ("repair", "cleanup", "backfill", "schema", "code")
 KNOWN_MODES = SYNC_MODES + OTHER_MODES
 
 #: A plan written before mode binding existed declares no mode. Every such plan was

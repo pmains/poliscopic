@@ -97,7 +97,10 @@
                         </a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/logout">Logout</a>
+                        <form method="POST" action="/logout" class="d-inline">
+                            <input type="hidden" name="csrf_token" value="{{ poliscopic_csrf_token() }}">
+                            <button type="submit" class="nav-link btn btn-link border-0">Logout</button>
+                        </form>
                     </li>
                     {% endif %}
                 </ul>
@@ -119,6 +122,42 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/choices.js@10.2.0/public/assets/scripts/choices.min.js"></script>
     <script src="/static/table-controls.js"></script>
+    {% if poliscopic_csrf_token is defined %}
+    <script>
+    // Flask-WTF protects browser mutations. Existing forms receive a hidden
+    // token, while JSON fetch calls receive the equivalent request header.
+    (function() {
+        var csrfToken = {{ poliscopic_csrf_token()|tojson }};
+        document.querySelectorAll('form').forEach(function(form) {
+            if ((form.method || 'get').toLowerCase() !== 'post') return;
+            if (form.querySelector('input[name="csrf_token"]')) return;
+            var input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'csrf_token';
+            input.value = csrfToken;
+            form.appendChild(input);
+        });
+
+        var originalFetch = window.fetch.bind(window);
+        window.fetch = function(input, init) {
+            var options = Object.assign({}, init || {});
+            var method = String(options.method || 'GET').toUpperCase();
+            if (!['GET', 'HEAD', 'OPTIONS', 'TRACE'].includes(method)) {
+                var target = typeof input === 'string' ? input : input.url;
+                var url = new URL(target, window.location.href);
+                if (url.origin === window.location.origin) {
+                    var headers = new Headers(options.headers || {});
+                    if (!headers.has('X-CSRFToken')) {
+                        headers.set('X-CSRFToken', csrfToken);
+                    }
+                    options.headers = headers;
+                }
+            }
+            return originalFetch(input, options);
+        };
+    })();
+    </script>
+    {% endif %}
     <script>
     // Poll for unread notification count
     (function() {
