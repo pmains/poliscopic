@@ -89,3 +89,16 @@ def test_web_release_contains_newsletter_route_dependencies():
     for asset in manifest.ENTRY_WEB_ASSETS:
         assert asset in files
         assert asset not in excluded
+
+
+def test_release_contains_canonical_package_and_registry_adapters():
+    from scripts.ops import build_release_manifest as manifest
+
+    adapters = manifest.registry_adapter_entries()
+    files, excluded = manifest.resolve(manifest.ENTRIES + adapters)
+
+    assert "src/poliscopic/db/core.py" in files
+    assert "src/poliscopic/db/repositories/public_bodies.py" in files
+    assert "scripts/scraper/jurisdictions/tolleson.py" in adapters
+    assert "scripts/scraper/jurisdictions/el_mirage_adapter.py" in adapters
+    assert not (set(adapters) & set(excluded))
