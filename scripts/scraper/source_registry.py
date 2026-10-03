@@ -216,7 +216,13 @@ SCHEDULED_SOURCES: tuple[ScheduledSource, ...] = (
         cli_command="buckeye",
     ),
     # Group D: lower-frequency and secondary sources.
-    ScheduledSource("el-mirage", "D", "parallel", "el-mirage"),
+    ScheduledSource(
+        "el-mirage",
+        "D",
+        "parallel",
+        "el-mirage",
+        adapter_module="scraper.jurisdictions.el_mirage_adapter",
+    ),
     ScheduledSource(
         "paradise-valley",
         "D",
