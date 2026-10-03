@@ -67,6 +67,13 @@ HOLD_STALE = "HOLD_STALE"
 UNKNOWN_OPERATION = "UNKNOWN_OPERATION"
 BYPASS_ATTEMPT = "BYPASS_ATTEMPT"
 
+# Execution-mode refusals. Scope alone cannot separate an insert-or-update from a
+# delete or a schema change at the same entry point and scope, so a
+# production-mutating request must declare its mode.
+MODE_MISSING = "MODE_MISSING"
+MODE_UNKNOWN = "MODE_UNKNOWN"
+MODE_MISMATCH = "MODE_MISMATCH"
+
 # Environment variables that would look like an escape hatch. Their PRESENCE is
 # treated as an attempted bypass, never as authorization.
 FORBIDDEN_ENV = (
@@ -218,18 +225,27 @@ def operation_id() -> str | None:
 # ── the decision ─────────────────────────────────────────────────────────
 
 
-def check(operation: str, entry_point: str = "", now: datetime | None = None) -> dict:
+def check(operation: str, entry_point: str = "", scope: list[str] | None = None,
+          target: str = "production", now: datetime | None = None,
+          mode: str | None = None,
+          authorization_id: str | None = None) -> dict:
     """Return the interlock decision for one operation request.
 
     Fails closed. Order of evaluation matters: an attempted bypass is reported
-    before anything else, and authorization is checked as DISABLED regardless of
-    hold state — a valid hold is a containment condition, never a permission.
+    before anything else, then classification, then the hold, then — for
+    production-mutating operations only — the one-operation authorization
+    validator in ``operation_authorization``.
+
+    A valid hold is a containment condition, never a permission, and the absence
+    of a hold is never authorization either. If the validator cannot be loaded,
+    or does not positively ALLOW, the operation is refused.
     """
     now = now or datetime.now(timezone.utc)
     verdict = {
         "schema": SCHEMA,
         "checked_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "operation": operation,
+        "authorization_id": authorization_id,
         "entry_point": entry_point or None,
         "interlock_path": str(interlock_dir()),
         "authorization_issuance": "disabled",
@@ -270,18 +286,73 @@ def check(operation: str, entry_point: str = "", now: datetime | None = None) ->
         })
         return verdict
 
-    # Production-mutating: refuse. Issuance/validation is disabled, so there is no
-    # path to ALLOWED today, whatever the hold looks like.
+    # Production-mutating: consult the one-operation authorization validator.
+    # Fail closed — an unloadable validator is a refusal, never a pass.
     hold_note = hold["detail"]
+    try:
+        from operation_authorization import (
+            KNOWN_MODES,
+            validate as _validate_authorization,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        verdict.update({
+            "status": "REFUSED", "code": AUTHORIZATION_DISABLED,
+            "reason": ("could not load the one-operation authorization validator; "
+                       "refusing rather than assuming a safe default"),
+            "mutates_production": True,
+            "hold_note": hold_note,
+            "validator_error": str(exc),
+        })
+        return verdict
+
+    # The execution MODE must be declared by the caller, and must be a real mode.
+    # This runs before the validator and long before any credential, connection or
+    # query — an omitted or invented mode can never fall through to a default.
+    if mode is None or not str(mode).strip():
+        verdict.update({
+            "status": "REFUSED", "code": MODE_MISSING,
+            "reason": ("caller declared no execution mode; scope alone cannot "
+                       "separate an upsert from a delete or a schema change at the "
+                       "same entry point and scope"),
+            "mutates_production": True,
+            "hold_note": hold_note,
+        })
+        return verdict
+    if mode not in KNOWN_MODES:
+        verdict.update({
+            "status": "REFUSED", "code": MODE_UNKNOWN,
+            "reason": (f"unknown execution mode {mode!r}; known modes are "
+                       f"{list(KNOWN_MODES)}"),
+            "mutates_production": True,
+            "hold_note": hold_note,
+        })
+        return verdict
+
+    authorization = _validate_authorization(
+        operation, entry_point=entry_point, scope=scope, target=target, now=now,
+        mode=mode, operation_id=authorization_id,
+    )
+    if authorization.get("status") != "ALLOWED":
+        verdict.update({
+            "status": "REFUSED",
+            "code": authorization.get("code") or AUTHORIZATION_DISABLED,
+            "reason": authorization.get("reason"),
+            "mutates_production": True,
+            "hold_note": hold_note,
+            "authorization": authorization,
+            "detail": ("a valid hold is a containment condition, not a permission; "
+                       "absence of a hold is never authorization either"),
+        })
+        return verdict
+
     verdict.update({
-        "status": "REFUSED", "code": AUTHORIZATION_DISABLED,
-        "reason": ("production authorization issuance and validation are disabled; "
-                   "no one-operation authorization can be validated, so this "
-                   "production-mutating operation cannot proceed"),
+        "status": "ALLOWED",
+        "code": None,
+        "reason": authorization.get("reason"),
         "mutates_production": True,
         "hold_note": hold_note,
-        "detail": ("a valid hold is a containment condition, not a permission; "
-                   "absence of a hold is never authorization either"),
+        "authorization_issuance": "validated",
+        "authorization": authorization,
     })
     return verdict
 
@@ -313,6 +384,17 @@ def main(argv: list[str] | None = None) -> int:
     p_check.add_argument("--entry-point", default="")
     p_check.add_argument("--json", action="store_true", default=True)
     p_check.add_argument("--human", action="store_true")
+    p_check.add_argument("--scope", default="",
+                         help="comma-separated scope tables the caller will touch")
+    p_check.add_argument("--target", default="production")
+    p_check.add_argument("--mode", default=None,
+                         help="execution mode of the request being checked; "
+                              "REQUIRED for production-mutating operations, because "
+                              "a table scope alone cannot separate an upsert from a "
+                              "delete or a schema change")
+    p_check.add_argument("--authorization-id", default=None,
+                         help="select one exact authorization artifact; managed "
+                              "production jobs should always provide this")
 
     p_class = sub.add_parser("classify", help="classify an operation kind")
     p_class.add_argument("--operation", required=True)
@@ -327,7 +409,10 @@ def main(argv: list[str] | None = None) -> int:
         return 4 if exc.code not in (0, None) else 0
 
     if args.command == "check":
-        verdict = check(args.operation, entry_point=args.entry_point)
+        scope = [s.strip() for s in args.scope.split(",") if s.strip()] or None
+        verdict = check(args.operation, entry_point=args.entry_point,
+                        scope=scope, target=args.target, mode=args.mode,
+                        authorization_id=args.authorization_id)
         _emit(verdict, as_json=not args.human)
         return _exit_code(verdict)
 

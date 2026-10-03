@@ -21,9 +21,6 @@ from dotenv import load_dotenv
 load_dotenv(_here / ".env")
 
 _database_url = os.environ.get("DATABASE_URL")
-if not _database_url:
-    _database_url = os.environ.get("DATABASE_URL")
-    os.environ["DATABASE_URL"] = _database_url
 
 # Startup diagnostic: redact through the tier module's single authority so a
 # raw URL (which carries the password) can never reach stderr/journald.

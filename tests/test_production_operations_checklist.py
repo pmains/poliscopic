@@ -518,9 +518,13 @@ def test_sync_prod_parser_really_has_no_plan_only():
     assert script.exists(), f"missing {script}"
     opts = _add_argument_options(script)
     assert "--plan-only" not in opts, "--plan-only unexpectedly exists in the parser"
+    # Re-verified 2026-09-23: "--tables" was added DELIBERATELY so sync_prod can
+    # declare exactly the write set it touches — the interlock scope must never
+    # understate what the run writes. The guard below is what forces this re-check.
     assert opts == {
         "--schema-only", "--bootstrap-schema", "--status",
         "--reconcile", "--reconcile-only", "--reconcile-dry-run",
+        "--tables", "--authorization-id",
     }, f"parser options changed; checklist must be re-verified: {sorted(opts)}"
 
 
