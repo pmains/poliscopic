@@ -1,66 +1,14 @@
-"""Stable reconciliation of per-meeting public-body attendance."""
+"""Compatibility alias for :mod:`poliscopic.db.meeting_members`."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Sequence
+import sys
+from pathlib import Path
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+_src = Path(__file__).resolve().parents[2] / "src"
+if str(_src) not in sys.path:
+    sys.path.insert(0, str(_src))
 
-from db.models import MeetingMember
+from poliscopic.db import meeting_members as _canonical  # noqa: E402
 
-
-@dataclass(frozen=True)
-class AttendanceRecord:
-    """One parsed attendance observation for a known person."""
-
-    member_id: int
-    role: str | None
-    present: bool | None
-
-
-def reconcile_meeting_members(
-    session: Session,
-    *,
-    body: str,
-    meeting_id: str,
-    meeting_db_id: int,
-    attendance: Sequence[AttendanceRecord],
-) -> int:
-    """Update or insert attendance while preserving graph provenance IDs.
-
-    Existing rows absent from a later parse are retained. A missing parsed name
-    is not sufficient evidence that a historical attendance record was false,
-    and graph assertions may still cite that row as their source evidence.
-
-    Returns:
-        Number of distinct attendance records present in the current input.
-    """
-    existing_rows = session.execute(
-        select(MeetingMember).where(
-            MeetingMember.body == body,
-            MeetingMember.meeting_id == meeting_id,
-        )
-    ).scalars()
-    members_by_person_id = {row.member_id: row for row in existing_rows}
-
-    for observation in attendance:
-        meeting_member = members_by_person_id.get(observation.member_id)
-        if meeting_member is None:
-            meeting_member = MeetingMember(
-                body=body,
-                meeting_id=meeting_id,
-                meeting_db_id=meeting_db_id,
-                member_id=observation.member_id,
-            )
-            session.add(meeting_member)
-            members_by_person_id[observation.member_id] = meeting_member
-        meeting_member.meeting_db_id = meeting_db_id
-        meeting_member.role = observation.role
-        meeting_member.present = observation.present
-        meeting_member.updated_at = datetime.now(timezone.utc)
-
-    session.flush()
-    return len({record.member_id for record in attendance})
+sys.modules[__name__] = _canonical

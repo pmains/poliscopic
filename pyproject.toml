@@ -1,0 +1,104 @@
+[project]
+name = "poliscopic"
+version = "0.1.0"
+description = "Public-meeting ingestion, search, and civic intelligence platform"
+readme = "README.md"
+requires-python = ">=3.10,<3.15"
+dependencies = [
+    "beautifulsoup4>=4.12",
+    "certifi>=2024.2",
+    "Flask>=3.1",
+    "Flask-Bcrypt>=1.0",
+    "Flask-Caching>=2.3",
+    "Flask-Login>=0.6",
+    "Flask-WTF>=1.2",
+    "Markdown>=3.5",
+    "openpyxl>=3.1",
+    "pdfplumber>=0.11",
+    "Pillow>=10.0",
+    "playwright>=1.59",
+    "psycopg2-binary>=2.9",
+    "PyMuPDF>=1.28",
+    "pypdf>=5.0",
+    "python-dotenv>=1.0",
+    "python-slugify>=8.0",
+    "requests>=2.31",
+    "SQLAlchemy>=2.0.49",
+    "xlrd>=2.0",
+]
+
+[project.optional-dependencies]
+editorial = [
+    "openai>=1.0",
+]
+ml = [
+    "catboost>=1.2",
+    "datasets>=3.0",
+    "fasttext>=0.9.3",
+    "gliner>=0.2",
+    "joblib>=1.3",
+    "lightgbm>=4.0",
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "peft>=0.13",
+    "scikit-learn>=1.4",
+    "scipy>=1.12",
+    "sentence-transformers>=3.0",
+    "setfit>=1.0",
+    "spacy>=3.7",
+    "torch>=2.2",
+    "transformers>=4.45",
+    "xgboost>=2.0",
+]
+dev = [
+    "mypy>=1.10",
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["poliscopic*"]
+namespaces = false
+
+[tool.uv]
+# Phase 4 uses uv as a cross-platform resolver/locker. The application continues
+# to run from the existing flat checkout until every runtime slice has migrated.
+# Packaging the currently migrated library modules must not make `uv sync`
+# replace the production entry point or the developer's existing environment.
+package = false
+required-version = ">=0.11.16,<0.12"
+environments = [
+    "python_version >= '3.10' and python_version < '3.15'",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+pythonpath = ["src", "scripts", "."]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = [
+    "archive",
+    "data",
+    "scripts/archive",
+]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+python_version = "3.10"
+check_untyped_defs = true
+ignore_missing_imports = true
+warn_unused_ignores = true

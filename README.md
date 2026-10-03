@@ -68,7 +68,7 @@ Bootstrap 5 Flask UI with:
 
 ## Requirements
 
-- Python 3.9+
+- Python 3.10–3.14 (3.11 or 3.12 recommended for the broadest ML compatibility)
 - Playwright (with Chromium browser) — for browser-backed scraping
 - PyMuPDF and pdfplumber — native text, word geometry, and table extraction
 - `pdftotext` (poppler-utils) — layout-preserving PDF fallback
@@ -86,6 +86,12 @@ playwright install chromium
 brew install poppler        # macOS — provides pdftotext
 brew install tesseract      # macOS — OCR with word boxes/confidence
 ```
+
+`pyproject.toml` records supported Python versions, dependency groups, and
+quality-tool configuration. During the package-layout migration it is
+intentionally metadata-only; continue using the existing repository entry
+points and `requirements.txt` rather than `pip install .` as an application
+deployment mechanism.
 
 ### Dependencies
 
@@ -236,7 +242,8 @@ Body-scoped filtering is available in the web UI.
 
 ## Data Model
 
-See `scripts/db.py` for the full SQLAlchemy model definitions.
+See `scripts/db/models.py` and `scripts/db/newsroom.py` for the SQLAlchemy model
+definitions.
 
 Key entities:
 - **Jurisdiction** — A county, city, or town (e.g., Maricopa County, City of Phoenix)
