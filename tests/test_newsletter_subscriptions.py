@@ -18,7 +18,7 @@ import os
 import re
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from unittest.mock import Mock
 from pathlib import Path
 
 import pytest
@@ -32,8 +32,7 @@ os.environ.pop("NEWSLETTER_TOKEN_SECRET", None)   # force dev fallback (determin
 from sqlalchemy import select  # noqa: E402
 
 from db.core import set_database_url, get_engine, get_session  # noqa: E402
-from db.newsroom import (NewsletterSubscriber, NewsletterSubscription,  # noqa: E402
-                         NewsletterSubmitLog)
+from db.newsroom import NewsletterSubmitLog  # noqa: E402
 from newsletter_svc import (NEWSLETTER_TOPICS, VALID_TOPICS,  # noqa: E402
                             normalize_email, make_action_url,
                             create_pending_subscriber, confirm_subscriber_by_email,
@@ -185,6 +184,18 @@ def test_set_topics_requires_active(session):
     assert set_topics_by_email(session, "e@example.com", ["housing"]) is None
 
 
+def test_service_mutations_leave_commit_to_caller(session):
+    sub = create_pending_subscriber(session, "owner@example.com", ["housing"])
+    session.commit = Mock()
+
+    confirm_subscriber_by_email(session, sub.email)
+    set_topics_by_email(session, sub.email, ["transportation"])
+    unsubscribe_by_email(session, sub.email, topic="transportation")
+    log_submit(session, sub.email, "127.0.0.1")
+
+    session.commit.assert_not_called()
+
+
 def test_active_recipients_owner_fallback_without_rows(session, monkeypatch):
     monkeypatch.setenv("NEWSLETTER_OWNER_EMAILS", "owner@example.com")
     recs = active_recipients("housing", engine_url=None)
@@ -195,6 +206,7 @@ def test_active_recipients_includes_owners(session, monkeypatch):
     monkeypatch.setenv("NEWSLETTER_OWNER_EMAILS", "owner@example.com")
     sub = create_pending_subscriber(session, "sub@example.com", ["housing"])
     confirm_subscriber_by_email(session, sub.email)
+    session.commit()
     recs = active_recipients("housing", engine_url=None)
     emails = {r["email"] for r in recs}
     assert "sub@example.com" in emails
@@ -348,6 +360,7 @@ def test_confirm_expired_token_rejected(client):
 def test_manage_link_and_topic_update(client, session):
     sub = create_pending_subscriber(session, "mgmt@example.com", ["housing"])
     confirm_subscriber_by_email(session, sub.email)
+    session.commit()
     url = make_action_url("mgmt@example.com", "manage")
     m = re.search(r"[?&]t=([^&]+)", url)
     # Manage page loads with current topics checked.
@@ -370,6 +383,7 @@ def test_manage_now_link_works_too(client, session):
     """On-demand manage-now links must open the same manage page."""
     sub = create_pending_subscriber(session, "reset@example.com", ["housing"])
     confirm_subscriber_by_email(session, sub.email)
+    session.commit()
     url = make_action_url("reset@example.com", "manage-now")
     m = re.search(r"[?&]t=([^&]+)", url)
     resp = client.get("/newsletter/manage?t=" + m.group(1))
@@ -382,6 +396,7 @@ def test_manage_post_requires_capability_token(client, session):
     unsubscribe an arbitrary address you happen to know."""
     sub = create_pending_subscriber(session, "victim@example.com", ["housing"])
     confirm_subscriber_by_email(session, sub.email)
+    session.commit()
     with client.session_transaction() as sess:
         csrf = sess.get("_newsletter_csrf", "")
     resp = client.post("/newsletter/manage",
@@ -394,7 +409,7 @@ def test_manage_post_requires_capability_token(client, session):
 
 def test_manage_unknown_email_neutral(client, session):
     """A valid manage-now token for an unknown address gets the neutral page."""
-    csrf = _prime(client)
+    _prime(client)
     url = make_action_url("ghost@example.com", "manage-now")
     m = re.search(r"[?&]t=([^&]+)", url)
     resp = client.get("/newsletter/manage?t=" + m.group(1))
@@ -406,6 +421,7 @@ def test_unsubscribe_one_click(client, session):
     sub = create_pending_subscriber(session, "unsub@example.com",
                                     ["housing", "transportation"])
     confirm_subscriber_by_email(session, sub.email)
+    session.commit()
     url = make_action_url("unsub@example.com", "unsubscribe", topic="housing")
     m = re.search(r"[?&]t=([^&]+)", url)
     resp = client.get("/newsletter/unsubscribe?t=" + m.group(1))
@@ -419,6 +435,7 @@ def test_unsubscribe_one_click(client, session):
 def test_unsubscribe_all(client, session):
     sub = create_pending_subscriber(session, "bye@example.com", ["housing"])
     confirm_subscriber_by_email(session, sub.email)
+    session.commit()
     url = make_action_url("bye@example.com", "unsubscribe")
     m = re.search(r"[?&]t=([^&]+)", url)
     resp = client.get("/newsletter/unsubscribe?t=" + m.group(1))

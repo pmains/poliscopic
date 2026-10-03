@@ -1,26 +1,23 @@
 """Members routes blueprint."""
 
 import logging
-from typing import Optional
+from functools import wraps
 
 from flask import Blueprint, render_template, request, jsonify, redirect
-from sqlalchemy import select, func, case, text as sa_text, or_, and_
+from sqlalchemy import select, func, case, text as sa_text, and_
 
 from db import (
-    get_session, Supervisor, MeetingMember, Person,
-    BodyMembership, _enhance_member_for_template,
+    Person,
     get_bos_supervisors, get_supervisor_by_slug_or_name,
     get_supervisor_vote_stats, get_supervisor_split_votes,
-    get_supervisor_dissents, get_supervisor_abstentions,
+    get_supervisor_abstentions,
     get_supervisor_absences, get_supervisor_full_voting_record,
     get_supervisor_slug,
     get_supervisor_voting_alignment, get_supervisor_swing_votes,
-    Jurisdiction, PublicBody, seed_default_jurisdictions,
-    get_public_bodies_by_jurisdiction, get_body_members,
-    Meeting, MeetingAttendance, ExecutiveSessionParticipant,
+    PublicBody, Meeting,
     AgendaItemVote, AgendaItem, MemberVote,
 )
-from routes import SYNC_STATUS_BADGES, _cache
+from poliscopic.db.core import session_scope
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +45,16 @@ def _date_query_string(start_date, end_date, start_year, end_year) -> str:
     if parts:
         return "?" + "&".join(parts)
     return ""
+
+
+def _scoped_read(view):
+    """Supply one read session and close it after the rendered response."""
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        with session_scope() as session:
+            return view(session, *args, **kwargs)
+
+    return wrapped
 
 
 def _get_pz_member_stats(session, person_id, start_date=None, end_date=None):
@@ -83,7 +90,7 @@ def _get_pz_member_stats(session, person_id, start_date=None, end_date=None):
     ).where(
         MemberVote.member_id == person_id,
         MemberVote.body == "pz",
-        AgendaItemVote.is_split_vote == True,
+        AgendaItemVote.is_split_vote.is_(True),
     )
     if start_date:
         split_q = split_q.where(MeetingModel.meeting_date >= start_date)
@@ -95,7 +102,7 @@ def _get_pz_member_stats(session, person_id, start_date=None, end_date=None):
     dissent_q = select(func.count(MemberVote.id)).where(
         MemberVote.member_id == person_id,
         MemberVote.body == "pz",
-        MemberVote.is_dissent == True,
+        MemberVote.is_dissent.is_(True),
     )
     if start_date:
         dissent_q = dissent_q.join(
@@ -131,7 +138,7 @@ def _get_pz_split_votes(session, person_id, start_date=None, end_date=None):
         AgendaItemVote.motion_result,
         AgendaItemVote.majority_position,
         case(
-            (MemberVote.is_dissent == True, "against_majority"),
+            (MemberVote.is_dissent.is_(True), "against_majority"),
             else_="with_majority",
         ).label("with_or_against_majority"),
     ).join(
@@ -145,7 +152,7 @@ def _get_pz_split_votes(session, person_id, start_date=None, end_date=None):
     ).where(
         MemberVote.member_id == person_id,
         MemberVote.body == "pz",
-        AgendaItemVote.is_split_vote == True,
+        AgendaItemVote.is_split_vote.is_(True),
     ).order_by(MeetingModel.meeting_date, AgendaItemVote.agenda_item_number)
     if start_date:
         q = q.where(MeetingModel.meeting_date >= start_date)
@@ -191,7 +198,7 @@ def _get_pz_swing_votes(session, person_id, start_date=None, end_date=None):
     ).where(
         MemberVote.member_id == person_id,
         MemberVote.body == "pz",
-        AgendaItemVote.is_split_vote == True,
+        AgendaItemVote.is_split_vote.is_(True),
     )
     if start_date:
         q = q.where(MeetingModel.meeting_date >= start_date)
@@ -294,7 +301,7 @@ def _get_pz_full_voting_record(session, person_id, start_date=None, end_date=Non
         AgendaItemVote.is_split_vote,
         AgendaItemVote.majority_position,
         case(
-            (MemberVote.is_dissent == True, "against_majority"),
+            (MemberVote.is_dissent.is_(True), "against_majority"),
             else_="with_majority",
         ).label("with_or_against_majority"),
     ).join(
@@ -399,7 +406,7 @@ def _get_pz_voting_alignment(session, person_id, other_ids,
         for row in session.execute(
             select(AgendaItemVote.id).where(
                 AgendaItemVote.id.in_(chunk),
-                AgendaItemVote.is_split_vote == True,
+                AgendaItemVote.is_split_vote.is_(True),
             )
         ).all():
             split_aivs.add(row[0])
@@ -466,7 +473,7 @@ def _get_pz_voting_alignment(session, person_id, other_ids,
 
 def _get_pz_body_split_votes(session, start_date=None, end_date=None):
     """All PZ split votes in date range with per-member breakdown."""
-    from db.models import MemberVote, Meeting as MeetingModel
+    from db.models import MemberVote
     from sqlalchemy import text as sa_text
 
     where_parts = ["aiv.body = 'pz'", "aiv.is_split_vote = 1"]
@@ -561,13 +568,6 @@ def member_votes_api(slug):
         start_year=YYYY   (overrides start_date)
         end_year=YYYY     (overrides end_date)
     """
-    session = get_session()
-
-    sup = get_supervisor_by_slug_or_name(session, slug)
-    if not sup:
-        session.close()
-        return jsonify({"rows": [], "total": 0, "page": 1, "per_page": 25}), 200
-
     try:
         page = int(request.args.get("page", 1))
     except ValueError:
@@ -593,25 +593,38 @@ def member_votes_api(slug):
     if end_year:
         end_date = f"{end_year}-12-31"
 
-    # Load the full dataset (date-filtered)
-    from db.models import MemberVote as _MV
-    has_pz = session.execute(
-        select(func.count(_MV.id)).where(
-            _MV.member_id == sup.id, _MV.body == "pz",
-        )
-    ).scalar() or 0
-    if has_pz:
-        all_records = _get_pz_full_voting_record(
-            session, sup.id,
-            start_date=start_date, end_date=end_date,
-        )
-    else:
-        body_code = request.args.get("body", "bos")
-        all_records = get_supervisor_full_voting_record(
-            session, sup.id, body=body_code,
-            start_date=start_date, end_date=end_date,
-        )
-    session.close()
+    # Load and project the full date-filtered dataset inside one owned session.
+    with session_scope() as session:
+        sup = get_supervisor_by_slug_or_name(session, slug)
+        if not sup:
+            return jsonify(
+                {"rows": [], "total": 0, "page": 1, "per_page": 25}
+            ), 200
+
+        from db.models import MemberVote as _MV
+
+        has_pz = session.execute(
+            select(func.count(_MV.id)).where(
+                _MV.member_id == sup.id,
+                _MV.body == "pz",
+            )
+        ).scalar() or 0
+        if has_pz:
+            all_records = _get_pz_full_voting_record(
+                session,
+                sup.id,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        else:
+            body_code = request.args.get("body", "bos")
+            all_records = get_supervisor_full_voting_record(
+                session,
+                sup.id,
+                body=body_code,
+                start_date=start_date,
+                end_date=end_date,
+            )
 
     if not all_records:
         return jsonify({"rows": [], "total": 0, "page": 1, "per_page": 25}), 200
@@ -676,7 +689,8 @@ def member_votes_api(slug):
 
 
 @members_bp.route("/members/<jurisdiction_slug>/<body_code>/analytics")
-def body_analytics(jurisdiction_slug, body_code):
+@_scoped_read
+def body_analytics(session, jurisdiction_slug, body_code):
     """Body-level analytics — cross-member voting alignment.
 
     Supports date/year filtering via query parameters:
@@ -685,8 +699,6 @@ def body_analytics(jurisdiction_slug, body_code):
         start_year=YYYY   (overrides start_date)
         end_year=YYYY     (overrides end_date)
     """
-    session = get_session()
-
     # Parse date/year parameters
     start_date = request.args.get("start_date")
     end_date = request.args.get("end_date")
@@ -744,7 +756,6 @@ def body_analytics(jurisdiction_slug, body_code):
         body_stats["against_majority"] += stats["against_majority"]
 
     if not active_sups:
-        session.close()
         return render_template(
             "body_analytics.html",
             jurisdiction_slug=jurisdiction_slug,
@@ -917,7 +928,6 @@ def body_analytics(jurisdiction_slug, body_code):
                 mvs = aiv_member_votes.get(r.aiv_id, [])
                 yes = sum(1 for m in mvs if m["vote"].lower() in ("yes", "aye"))
                 no = sum(1 for m in mvs if m["vote"].lower() in ("no", "nay"))
-                abst = sum(1 for m in mvs if m["vote"].lower() in ("abstain", "abstained"))
                 split_votes_data.append({
                     "meeting_id": r.meeting_id,
                     "meeting_date": r.meeting_date,
@@ -929,8 +939,6 @@ def body_analytics(jurisdiction_slug, body_code):
                     "vote_tally": f"{yes}-{no}",
                     "member_votes": mvs,
                 })
-
-    session.close()
 
     return render_template(
         "body_analytics.html",
@@ -952,32 +960,11 @@ def body_analytics(jurisdiction_slug, body_code):
     )
 
 
-@members_bp.route("/members/<jurisdiction_slug>/<body_code>/<slug>")
-def member_detail(jurisdiction_slug, body_code, slug):
-    """Member profile by jurisdiction + body + slug — disambiguates name collisions.
-
-    Supports date/year filtering via query parameters:
-        start_date=YYYY-MM-DD
-        end_date=YYYY-MM-DD
-        start_year=YYYY   (overrides start_date)
-        end_year=YYYY     (overrides end_date)
-    """
-    session = get_session()
-
+def _load_member_detail_data(session, body_code, slug, start_date, end_date):
+    """Load a member profile as render-safe values owned by the caller."""
     sup = get_supervisor_by_slug_or_name(session, slug)
     if not sup:
-        session.close()
-        return render_template("member_detail.html", member=None, slug=slug)
-
-    # Parse date/year parameters
-    start_date = request.args.get("start_date")
-    end_date = request.args.get("end_date")
-    start_year = request.args.get("start_year")
-    end_year = request.args.get("end_year")
-    if start_year:
-        start_date = f"{start_year}-01-01"
-    if end_year:
-        end_date = f"{end_year}-12-31"
+        return None
 
     slug_out = get_supervisor_slug(sup)
     is_pz = body_code == "pz"
@@ -1054,7 +1041,47 @@ def member_detail(jurisdiction_slug, body_code, slug):
         if _body:
             body_slug = _body.slug
 
-    session.close()
+    return {
+        "member": {
+            "name": sup.name,
+            "district": getattr(sup, "district", None),
+        },
+        "slug": slug_out,
+        "body_slug": body_slug,
+        "is_pz": is_pz,
+        "stats": stats,
+        "split_votes": split_votes,
+        "dissents": dissents,
+        "abstentions": abstentions,
+        "absences": absences,
+        "full_record": full_record,
+        "full_record_count": full_record_count,
+        "swing_votes": swing_votes,
+    }
+
+
+@members_bp.route("/members/<jurisdiction_slug>/<body_code>/<slug>")
+def member_detail(jurisdiction_slug, body_code, slug):
+    """Member profile by jurisdiction + body + slug — disambiguates names."""
+    start_date = request.args.get("start_date")
+    end_date = request.args.get("end_date")
+    start_year = request.args.get("start_year")
+    end_year = request.args.get("end_year")
+    if start_year:
+        start_date = f"{start_year}-01-01"
+    if end_year:
+        end_date = f"{end_year}-12-31"
+
+    with session_scope() as session:
+        detail = _load_member_detail_data(
+            session,
+            body_code,
+            slug,
+            start_date,
+            end_date,
+        )
+    if detail is None:
+        return render_template("member_detail.html", member=None, slug=slug)
 
     filtered_analytics_url = (
         f"/members/{jurisdiction_slug}/{body_code}/analytics"
@@ -1063,27 +1090,31 @@ def member_detail(jurisdiction_slug, body_code, slug):
     qs = _date_query_string(start_date, end_date, start_year, end_year)
     body_param = f"body={body_code}"
     sep = "&" if qs else "?"
-    full_record_api_url = f"/api/members/{slug_out}/votes{qs}{sep}{body_param}"
+    full_record_api_url = (
+        f"/api/members/{detail['slug']}/votes{qs}{sep}{body_param}"
+    )
 
     return render_template(
         "member_detail.html",
-        member=sup,
-        slug=slug_out,
-        body_slug=body_slug,
+        member=detail["member"],
+        slug=detail["slug"],
+        body_slug=detail["body_slug"],
         filtered_analytics_url=filtered_analytics_url,
-        is_pz=is_pz,
-        stats=stats,
-        split_votes=split_votes,
-        dissents=dissents,
-        abstentions=abstentions,
-        absences=absences,
-        full_record=full_record,
-        full_record_count=full_record_count,
-        swing_votes=swing_votes,
+        is_pz=detail["is_pz"],
+        stats=detail["stats"],
+        split_votes=detail["split_votes"],
+        dissents=detail["dissents"],
+        abstentions=detail["abstentions"],
+        absences=detail["absences"],
+        full_record=detail["full_record"],
+        full_record_count=detail["full_record_count"],
+        swing_votes=detail["swing_votes"],
         full_record_api_url=full_record_api_url,
         vote_badges=VOTE_BADGE_CLASSES,
         majority_badges=MAJORITY_BADGE_CLASSES,
-        member_url=f"/members/{jurisdiction_slug}/{body_code}/{slug_out}",
+        member_url=(
+            f"/members/{jurisdiction_slug}/{body_code}/{detail['slug']}"
+        ),
         start_date=start_date or "",
         end_date=end_date or "",
         start_year=start_year or "",
@@ -1098,26 +1129,26 @@ def member_detail_legacy(slug):
     Preserves query parameters (e.g., ?start_year=2025).
     Detects whether the member is a BOS supervisor or PZ commissioner.
     """
-    session = get_session()
-    sup = get_supervisor_by_slug_or_name(session, slug)
-    if sup:
-        slug_out = get_supervisor_slug(sup)
-        # Detect body: check if this person has PZ votes
-        from db.models import MemberVote as _MV
-        from sqlalchemy import select as _sel, func as _fn
-        has_pz = session.execute(
-            _sel(_fn.count(_MV.id)).where(
-                _MV.member_id == sup.id, _MV.body == "pz",
-            )
-        ).scalar() or 0
-        body_code = "pz" if has_pz > 0 else "bos"
-        session.close()
-        qs = request.query_string.decode() if request.query_string else ""
-        target = f"/members/maricopa-county/{body_code}/{slug_out}"
-        if qs:
-            target += "?" + qs
-        return redirect(target)
-    session.close()
+    with session_scope() as session:
+        sup = get_supervisor_by_slug_or_name(session, slug)
+        if sup:
+            slug_out = get_supervisor_slug(sup)
+            # Detect body: check if this person has PZ votes
+            from db.models import MemberVote as _MV
+            from sqlalchemy import select as _sel, func as _fn
+
+            has_pz = session.execute(
+                _sel(_fn.count(_MV.id)).where(
+                    _MV.member_id == sup.id,
+                    _MV.body == "pz",
+                )
+            ).scalar() or 0
+            body_code = "pz" if has_pz > 0 else "bos"
+            qs = request.query_string.decode() if request.query_string else ""
+            target = f"/members/maricopa-county/{body_code}/{slug_out}"
+            if qs:
+                target += "?" + qs
+            return redirect(target)
     return render_template("member_detail.html", member=None, slug=slug)
 
 
@@ -1129,31 +1160,29 @@ def debug_inferred_abstentions():
     quickly check whether the vote was truly abstained or the parser
     missed an explicit Yes/No from the summary.
     """
-    session = get_session()
-
-    from sqlalchemy import text as sa_text
     # Joining AgendaItemVote → Meeting for meeting_date
-    rows = session.execute(
-        sa_text("""
-            SELECT
-                aiv.meeting_id,
-                m.meeting_date,
-                aiv.agenda_item_number,
-                aiv.vote_text,
-                mv.member_id,
-                sup.name,
-                sup.normalized_name
-            FROM member_votes mv
-            JOIN agenda_item_votes aiv ON aiv.id = mv.agenda_item_vote_id
-            JOIN persons sup ON sup.id = mv.member_id
-            LEFT JOIN meetings m ON m.id = aiv.meeting_db_id AND m.body = aiv.body
-            WHERE mv.raw_vote_text LIKE :prefix
-              AND aiv.body = :body
-            ORDER BY aiv.meeting_id, aiv.agenda_item_number
-        """)
-        .bindparams(prefix="inferred%", body="bos")
-    ).all()
-    session.close()
+    with session_scope() as session:
+        rows = session.execute(
+            sa_text("""
+                SELECT
+                    aiv.meeting_id,
+                    m.meeting_date,
+                    aiv.agenda_item_number,
+                    aiv.vote_text,
+                    mv.member_id,
+                    sup.name,
+                    sup.normalized_name
+                FROM member_votes mv
+                JOIN agenda_item_votes aiv ON aiv.id = mv.agenda_item_vote_id
+                JOIN persons sup ON sup.id = mv.member_id
+                LEFT JOIN meetings m
+                    ON m.id = aiv.meeting_db_id AND m.body = aiv.body
+                WHERE mv.raw_vote_text LIKE :prefix
+                  AND aiv.body = :body
+                ORDER BY aiv.meeting_id, aiv.agenda_item_number
+            """)
+            .bindparams(prefix="inferred%", body="bos")
+        ).all()
 
     # Group by meeting
     by_meeting: dict[str, list] = {}
@@ -1181,4 +1210,3 @@ def member_analytics(slug):
     if qs:
         target += "?" + qs
     return redirect(target)
-
