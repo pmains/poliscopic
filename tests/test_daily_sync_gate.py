@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -11,6 +13,29 @@ from scripts.ops import production_preflight as preflight
 
 DAY = "2026-10-03"
 NOW = datetime(2026, 10, 3, 18, 0, tzinfo=timezone.utc)
+
+
+def test_direct_interlock_execution_exposes_daily_gate_packages(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    ops = root / "scripts" / "ops"
+    environment = dict(os.environ)
+    environment.pop("PYTHONPATH", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                f"sys.path.insert(0, {str(ops)!r}); "
+                "import production_interlock; import daily_sync_gate"
+            ),
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def _write(path: Path, payload: dict) -> Path:
