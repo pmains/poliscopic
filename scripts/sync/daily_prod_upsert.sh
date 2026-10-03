@@ -18,7 +18,7 @@ esac
 SYNC_DIR="$ROOT/data/sync"
 TERMINAL="$SYNC_DIR/prod-upsert-${RUN_DATE}.terminal.json"
 LOCK="$SYNC_DIR/.prod-upsert-${RUN_DATE}.lock"
-AUTHORIZATION_ID="OP-RECON-standing-daily-sync"
+AUTHORIZATION_ID="OP-RECON-standing-daily-sync-v2"
 PY="$ROOT/.venv/bin/python"
 mkdir -p "$SYNC_DIR"
 
