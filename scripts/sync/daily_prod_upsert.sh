@@ -42,7 +42,7 @@ echo "$COMPLETION"
 # interlock are enforced inside sync_prod.py before its production connection.
 BATCH_SIZE="${BATCH_SIZE:-5000}" BATCH_SLEEP_MS="${BATCH_SLEEP_MS:-100}" \
   .venv/bin/python -u scripts/db/sync_prod.py \
-    --authorization-id daily-civic-sync-20260930d
+    --authorization-id OP-RECON-standing-daily-sync
 
 # Public smoke checks are part of success, not best-effort diagnostics.
 curl -fsS --max-time 30 -o /dev/null https://poliscopic.com/
