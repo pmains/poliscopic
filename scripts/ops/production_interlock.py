@@ -38,6 +38,15 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Direct execution sets ``sys.path[0]`` to scripts/ops, but the daily gate
+# imports canonical modules through the ``scripts`` and ``poliscopic`` packages.
+# Make those package roots explicit before any lazy gate import. This is path
+# setup only: no credentials, network, or database work occurs here.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+for _candidate in (_REPO_ROOT, _REPO_ROOT / "src", _REPO_ROOT / "scripts"):
+    if str(_candidate) not in sys.path:
+        sys.path.insert(0, str(_candidate))
+
 SCHEMA = "production-interlock/1"
 
 # ── operation classification ─────────────────────────────────────────────
