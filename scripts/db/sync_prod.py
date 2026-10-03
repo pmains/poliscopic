@@ -109,7 +109,11 @@ def _parse_tables(value: str | None) -> list[str] | None:
 
 
 def _interlock_verdict(reconcile_dry_run: bool = False, tables=None, mode=None,
-                       authorization_id: str | None = None):
+                       authorization_id: str | None = None,
+                       attempt_id: str | None = None,
+                       run_date: str | None = None,
+                       preflight_path: str | None = None,
+                       backup_receipt_path: str | None = None):
     """Run the fail-closed production interlock. Returns (allowed, verdict).
 
     Imported lazily so the module stays importable in contexts without scripts/ops
@@ -147,7 +151,9 @@ def _interlock_verdict(reconcile_dry_run: bool = False, tables=None, mode=None,
     else:
         verdict = _interlock_check(
             op, entry_point="scripts/db/sync_prod.py", scope=declared, mode=mode,
-            authorization_id=authorization_id)
+            authorization_id=authorization_id, attempt_id=attempt_id,
+            run_date=run_date, preflight_path=preflight_path,
+            backup_receipt_path=backup_receipt_path)
     return verdict.get("status") == "ALLOWED", verdict
 
 
@@ -176,7 +182,11 @@ def execution_mode_for(reconcile: bool = False, reconcile_only: bool = False,
 def main(reconcile: bool = False, reconcile_only: bool = False,
          reconcile_dry_run: bool = False, schema_only: bool = False,
          bootstrap_schema: bool = False, tables=None,
-         authorization_id: str | None = None) -> int:
+         authorization_id: str | None = None,
+         attempt_id: str | None = None,
+         run_date: str | None = None,
+         preflight_path: str | None = None,
+         backup_receipt_path: str | None = None) -> int:
     # ── --tables narrows the WRITE SET, before anything else ─────────────────
     # Refused for modes that touch tables beyond the requested set: reconcile
     # walks its own fixed children-first order (db/sync_reconcile.RECONCILE_ORDER)
@@ -214,7 +224,8 @@ def main(reconcile: bool = False, reconcile_only: bool = False,
     # --reconcile-dry-run is the only read-only mode in this family; every other
     # path through main() can write to production.
     allowed, verdict = _interlock_verdict(
-        reconcile_dry_run, tables, mode, authorization_id)
+        reconcile_dry_run, tables, mode, authorization_id, attempt_id, run_date,
+        preflight_path, backup_receipt_path)
     if not allowed:
         sys.stderr.write(json.dumps(verdict, sort_keys=True) + "\n")
         sys.stderr.write("REFUSED: production interlock blocked this sync.\n")
@@ -278,6 +289,16 @@ if __name__ == "__main__":
         help="Select one exact operation authorization. Required by managed daily "
              "and maintenance wrappers to avoid matching an unintended grant.",
     )
+    parser.add_argument(
+        "--attempt-id", default=None,
+        help="Stable run id required by terminal-accounted standing authorizations.",
+    )
+    parser.add_argument("--run-date", default=None,
+                        help="Daily lineage date for the guarded standing sync.")
+    parser.add_argument("--preflight", default=None,
+                        help="Fresh production preflight receipt for the guarded sync.")
+    parser.add_argument("--backup-receipt", default=None,
+                        help="Restore-verified backup receipt for the guarded sync.")
     args = parser.parse_args()
 
     if args.status:
@@ -307,4 +328,8 @@ if __name__ == "__main__":
         bootstrap_schema=args.bootstrap_schema,
         tables=_parse_tables(args.tables),
         authorization_id=args.authorization_id,
+        attempt_id=args.attempt_id,
+        run_date=args.run_date,
+        preflight_path=args.preflight,
+        backup_receipt_path=args.backup_receipt,
     ))

@@ -40,10 +40,17 @@ def _run_checker(sync_dir: Path, day: str = DAY):
 
 
 def _write_scrape(sync_dir: Path, day: str = DAY, *, summary=True, log_gz=True,
-                  status="success"):
+                  status="success", metrics_status="ok"):
     sync_dir.mkdir(parents=True, exist_ok=True)
     if summary:
-        body = "" if status is None else f"completion_status: {status}\nexit_code: 0\n"
+        body = "" if status is None else (
+            f"completion_status: {status}\nexit_code: 0\n"
+            f"metrics_status: {metrics_status}\n"
+            + "".join(f"{name}: 0\n" for name in (
+                "pre_total_meetings", "pre_completed", "pre_failed", "pre_pending",
+                "pre_recent_24h_syncs", "pre_total_items", "post_total_meetings",
+                "post_completed", "post_failed", "post_pending",
+                "post_recent_24h_syncs", "post_total_items")))
         (sync_dir / f"{day}-summary.txt").write_text(body)
     if log_gz:
         (sync_dir / f"{day}.log.gz").write_bytes(b"\x1f\x8b\x08\x00stub")
@@ -144,6 +151,25 @@ def test_failed_scrape_status_refuses(tmp_path):
     result = _run_checker(tmp_path)
     assert result.returncode == 1
     assert "completion_status=failed" in result.stdout
+
+
+def test_unavailable_metrics_refuse_completion(tmp_path):
+    _write_scrape(tmp_path, metrics_status="unavailable")
+    _write_entity(tmp_path)
+    result = _run_checker(tmp_path)
+    assert result.returncode == 1
+    assert "metrics_status=unavailable" in result.stdout
+
+
+def test_non_numeric_required_metric_refuses_completion(tmp_path):
+    _write_scrape(tmp_path)
+    summary = tmp_path / f"{DAY}-summary.txt"
+    summary.write_text(summary.read_text().replace(
+        "post_total_items: 0", "post_total_items: ?"))
+    _write_entity(tmp_path)
+    result = _run_checker(tmp_path)
+    assert result.returncode == 1
+    assert "post_total_items is not numeric" in result.stdout
 
 
 def test_usage_error_on_bad_date(tmp_path):
