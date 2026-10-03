@@ -72,6 +72,7 @@ SCHEDULED_SOURCES: tuple[ScheduledSource, ...] = (
         "A",
         "serial",
         "tempe",
+        adapter_module="scraper.jurisdictions.tempe_subcommittees_adapter",
         accepts_date_range=False,
     ),
     # Group B: primary HTTP sources plus retained legacy overlap.

@@ -290,14 +290,6 @@ async def main() -> int:
         )
         return finder.print_report(items, hearing_meetings, _hargs.json, _hargs.jurisdiction)
 
-    if args.source == "tempe-subcommittees" and args.sync:
-        from scraper.jurisdictions.tempe.subcommittees import main as tempe_sub_main
-        import sys as _sys
-        # Extract remaining args after 'tempe-subcommittees' for the module parser
-        remaining = _sys.argv[_sys.argv.index('tempe-subcommittees') + 1:]
-        _sys.argv = ['tempe-subcommittees'] + remaining
-        return tempe_sub_main()
-
     if args.source == "phoenix-aem" and args.sync:
         from scraper.jurisdictions.phoenix_aem import fetch_all_notice_bodies, search_and_convert
         from db import get_session, init_db, replace_meeting_data_safe, Meeting as MeetingModel
