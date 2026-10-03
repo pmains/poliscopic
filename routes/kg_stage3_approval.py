@@ -38,28 +38,28 @@ kg_stage3_approval_bp = Blueprint("kg_stage3_approval", __name__,
                                   url_prefix="/kg/stage3-approval")
 
 REPO = Path(__file__).resolve().parent.parent
-PROPOSAL_PATH = REPO / "data/kg-plans/kg-stage3-processing-receipt-proposal-20260921T195816Z.json"
-PLAN_PATH = REPO / "data/kg-plans/kg-stage3-processing-dry-plan-20260921T193158Z.json"
-DESIGN_PATH = REPO / "data/kg-plans/kg-stage3-processing-receipt-store-packet-20260921T194940Z.json"
-RECEIPT_SET_PATH = REPO / "data/kg-plans/kg-stage3-processing-receipt-set-20260921T192601Z.json"
-BACKUP_PATH = REPO / "data/backups/kg-stage2-backup-receipt-20260921T184835Z.json"
-SCHEDULE_PATH = REPO / "data/kg-plans/kg-stage3-receipt-batch-schedule-20260921T195036Z.json"
+PROPOSAL_PATH = REPO / "data/kg-plans/kg-stage3-processing-receipt-proposal-20260925T002000Z.json"
+PLAN_PATH = REPO / "data/kg-plans/kg-stage3-processing-dry-plan-20260925T000417Z.json"
+DESIGN_PATH = REPO / "data/kg-plans/kg-stage3-processing-receipt-store-packet-20260925T000600Z.json"
+RECEIPT_SET_PATH = REPO / "data/kg-plans/kg-stage3-processing-receipt-set-20260925T000236Z.json"
+BACKUP_PATH = REPO / "data/backups/kg-stage2-backup-receipt-20260924T234757Z.json"
+SCHEDULE_PATH = REPO / "data/kg-plans/kg-stage3-receipt-batch-schedule-20260925T000620Z.json"
 APPROVAL_DIR = REPO / "data/kg-approvals"
 
 EXPECTED = {
-    "proposal": "f6a06b59e8da8bfdaef5e460a3659961931d6f3a19f0dd2dd237fa33c6202f60",
-    "plan": "73359d2df800b5d8f4e1a399bfc925141e4617e82f0509354470e6f4478eb2f9",
-    "design_packet": "ae86c35948ca6e214e5699e799897811b2517d285e003c4126c7c6a44fea852c",
-    "receipt_set": "95f8e5d04636624c679144e5b9e8f938abf1bfc816bb39f69cfc22bb05bd8a0c",
-    "backup_receipt": "3eb11bbec9bdbff7c9e7ecd5a46a0f17709c318cdebbac4425fe03d3afbccd7e",
-    "schedule": "117da8dd098d7483de49985e52545f28d1817e71c4293fb00714a2c2950616b2",
+    "proposal": "7f38f287f61afed74e286e952c1208d9868e6d6d1d6db45e7681d4473b9df59e",
+    "plan": "45534505f0fc102cac2ecbac461632cf308f4908fbe7d5b94a3df3dbd52b334f",
+    "design_packet": "7b5286f7a3afded39908781e24cb59e926b1abd44260d1ce4f22997b2b1580f9",
+    "receipt_set": "46791f60c3d84569ed77353e52904a0e2398c4b7dc6fb6884f70d2a1fb9a820b",
+    "backup_receipt": "d7d51c5f2a555b699ab8121a0d423ee5cf565cc10ed93980b184da8531e51653",
+    "schedule": "6a12e1246f0319d4efac65a3413dfd8968b3d15b805f20b73fa363e396cb9de3",
 }
 EXPECTED_TARGET = {"tier": "development", "database": "poliscopic_dev"}
 CURRENT_CURSOR = 6100
-REMAINING_WRITES = 58628
+REMAINING_WRITES = 58613
 BATCH_COUNT = 120
 BATCH_SIZE = 500
-HELD_AFTER_CURSOR = 996
+HELD_AFTER_CURSOR = 1044
 EXISTING_REPLAY = 6095
 HELD_IN_CONSUMED_PREFIX = 5
 

@@ -6,8 +6,11 @@ import sys
 import time
 from functools import wraps
 from pathlib import Path
+
+from dotenv import load_dotenv
 from flask import Flask
-from typing import Callable
+from flask_wtf.csrf import CSRFProtect, generate_csrf
+from markupsafe import Markup, escape
 
 log = logging.getLogger(__name__)
 
@@ -17,13 +20,9 @@ _scripts_dir = _here / "scripts"
 sys.path.insert(0, str(_scripts_dir))
 
 # Load .env so DATABASE_URL is available
-from dotenv import load_dotenv
 load_dotenv(_here / ".env")
 
 _database_url = os.environ.get("DATABASE_URL")
-if not _database_url:
-    _database_url = os.environ.get("DATABASE_URL")
-    os.environ["DATABASE_URL"] = _database_url
 
 # Startup diagnostic: redact through the tier module's single authority so a
 # raw URL (which carries the password) can never reach stderr/journald.
@@ -48,6 +47,47 @@ def _safe_database_target(url: str | None) -> str:
             return "(unparseable target)"
 
 
+def _safe_search_highlight(value: object) -> Markup:
+    """Escape a database headline while preserving our generated mark tags."""
+    escaped = str(escape("" if value is None else str(value)))
+    return Markup(
+        escaped.replace("&lt;mark&gt;", "<mark>")
+        .replace("&lt;/mark&gt;", "</mark>")
+    )
+
+
+def _highlight_mention(value: object, mention: object) -> Markup:
+    """Escape source text and wrap exact mention matches in trusted markup."""
+    escaped_value = str(escape("" if value is None else str(value)))
+    escaped_mention = str(escape("" if mention is None else str(mention)))
+    if not escaped_mention:
+        return Markup(escaped_value)
+    return Markup(
+        escaped_value.replace(
+            escaped_mention,
+            f"<mark>{escaped_mention}</mark>",
+        )
+    )
+
+
+def _session_security_settings(environ: dict[str, str]) -> tuple[str, bool]:
+    """Resolve session settings and fail closed for the production tier."""
+    production = environ.get("POLISCOPIC_DB_TIER", "").lower() == "production"
+    development_secret = "dev-secret-key-change-in-production"
+    secret = environ.get("FLASK_SECRET_KEY") or development_secret
+    secure_setting = environ.get("POLISCOPIC_COOKIE_SECURE")
+    secure = production if secure_setting is None else secure_setting.lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if production and secret == development_secret:
+        raise RuntimeError("FLASK_SECRET_KEY must be set for production")
+    if production and not secure:
+        raise RuntimeError("POLISCOPIC_COOKIE_SECURE cannot be disabled in production")
+    return secret, secure
+
+
 print(f"Database target: {_safe_database_target(_database_url)}", file=sys.stderr)
 
 
@@ -64,6 +104,7 @@ SYNC_STATUS_BADGES = {
 }
 
 _cache_instance = None
+_csrf = CSRFProtect()
 
 
 def get_cache():
@@ -121,10 +162,6 @@ def create_app() -> Flask:
         _cache_instance = None
         log.warning("Flask-Caching not installed — install with: pip install Flask-Caching")
 
-    # ── Seed default data on startup ─────────────────────────────────────
-    from db import seed_default_jurisdictions
-    seed_default_jurisdictions()
-
     # ── Request timing ───────────────────────────────────────────────────
     @app.before_request
     def _start_timer():
@@ -149,26 +186,29 @@ def create_app() -> Flask:
 
     @login_manager.user_loader
     def _load_user(user_id):
-        from db.core import get_session
-        from sqlalchemy import select
-        session = get_session()
-        user = session.get(AdminUser, int(user_id))
-        session.close()
-        return user
+        from db.core import session_scope
+        with session_scope() as db_session:
+            return db_session.get(AdminUser, int(user_id))
 
-    app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-key-change-in-production")
+    app.secret_key, _secure_cookies = _session_security_settings(os.environ)
 
     # Explicit session cookie settings for broader browser compatibility
-    _secure_cookies = os.environ.get("POLISCOPIC_COOKIE_SECURE", "").lower() in ("1", "true", "yes")
     app.config.update(
         SESSION_COOKIE_NAME="poliscopic_session",  # Avoid conflicts with old cookies
         SESSION_COOKIE_SAMESITE="Lax",
         SESSION_COOKIE_HTTPONLY=True,
-        SESSION_COOKIE_SECURE=_secure_cookies,  # True on prod (https); False on localhost
+        SESSION_COOKIE_SECURE=_secure_cookies,
         PERMANENT_SESSION_LIFETIME=3600 * 24,  # 24 hours
         SESSION_REFRESH_EACH_REQUEST=False,
-        WTF_CSRF_ENABLED=False,  # Disable CSRF for dev
+        WTF_CSRF_ENABLED=True,
     )
+    _csrf.init_app(app)
+    # Use a project-specific name so newsletter views may continue passing
+    # their independent `csrf_token` string without shadowing this callable.
+    app.template_global("poliscopic_csrf_token")(generate_csrf)
+
+    app.template_filter("safe_search_highlight")(_safe_search_highlight)
+    app.template_filter("highlight_mention")(_highlight_mention)
 
     # ── Security headers (OWASP: nosniff / clickjacking / referrer) ────
     @app.after_request
@@ -357,13 +397,6 @@ def create_app() -> Flask:
     from routes.newsletter import widget_context as _newsletter_widget_context
     app.template_global("newsletter_widget_ctx")(_newsletter_widget_context)
 
-    # ── Initialize newsroom tables ───────────────────────────────────────
-    from db.newsroom import init_newsroom_db, seed_default_tags, seed_default_users, seed_default_topics
-    init_newsroom_db()
-    seed_default_tags()
-    seed_default_users()
-    seed_default_topics()
-
     # ── Register blueprints ──────────────────────────────────────────────
     from routes.meetings import meetings_bp
     from routes.bodies import bodies_bp
@@ -374,9 +407,6 @@ def create_app() -> Flask:
     from routes.themes import themes_bp
     from routes.topics import topics_bp
     from routes.entities import entities_bp
-    from routes.entity_annotation import annotation_bp
-    from routes.entity_viewer import entity_viewer_bp
-    from routes.kg_quality_review import kg_quality_review_bp
     from routes.podcast import podcast_bp
     app.register_blueprint(meetings_bp)
     app.register_blueprint(bodies_bp)
@@ -386,18 +416,51 @@ def create_app() -> Flask:
     app.register_blueprint(topics_bp)
     app.register_blueprint(entities_bp)
     app.register_blueprint(podcast_bp)
-    app.register_blueprint(annotation_bp)
-    app.register_blueprint(entity_viewer_bp)
-    app.register_blueprint(kg_quality_review_bp)
-
-
     from routes.newsletter import newsletter_bp
+    # Newsletter routes already enforce a session-bound token plus anti-bot
+    # controls. Keep that independently tested protocol instead of applying a
+    # second incompatible token format to the same public forms.
+    _csrf.exempt(newsletter_bp)
     app.register_blueprint(newsletter_bp)
 
     # Admin and auth are only registered when admin is enabled
     if not _disable_admin:
         app.register_blueprint(auth_bp)
         app.register_blueprint(admin_bp)
+
+    # Internal labeling and model-inspection tools are never public by default.
+    # Enabling them also requires the authenticated admin surface.
+    _enable_internal_tools = os.environ.get(
+        "POLISCOPIC_ENABLE_INTERNAL_TOOLS", ""
+    ).lower() in ("true", "1", "yes")
+    app.config["POLISCOPIC_INTERNAL_TOOLS_ENABLED"] = (
+        _enable_internal_tools and not _disable_admin
+    )
+    if _enable_internal_tools and _disable_admin:
+        log.warning(
+            "POLISCOPIC_ENABLE_INTERNAL_TOOLS ignored because admin is disabled"
+        )
+    elif _enable_internal_tools:
+        from flask_login import current_user
+        from routes.entity_annotation import annotation_bp
+        from routes.entity_viewer import entity_viewer_bp
+        from routes.kg_quality_review import kg_quality_review_bp
+
+        internal_blueprints = {
+            annotation_bp.name,
+            entity_viewer_bp.name,
+            kg_quality_review_bp.name,
+        }
+
+        @app.before_request
+        def _authenticate_internal_tools():
+            if request.blueprint in internal_blueprints and not current_user.is_authenticated:
+                return login_manager.unauthorized()
+            return None
+
+        app.register_blueprint(annotation_bp)
+        app.register_blueprint(entity_viewer_bp)
+        app.register_blueprint(kg_quality_review_bp)
 
     if _disable_admin:
         @app.route("/admin")

@@ -9,25 +9,16 @@ Routes:
 
 import json
 import logging
-from datetime import date
-from typing import Optional
 
-from flask import Blueprint, render_template, request, abort
-from sqlalchemy import select, desc
+from flask import Blueprint, abort, render_template
+from sqlalchemy import desc, select
 
-from db import get_session
+from db.core import session_scope
 from db.newsroom import Topic, TopicWeeklyReport, Article
 
 log = logging.getLogger(__name__)
 
 topics_bp = Blueprint("topics", __name__, url_prefix="/topics")
-
-
-def _get_session():
-    """Get a scoped DB session (closes automatically at end of request)."""
-    s = get_session()
-    return s
-
 
 # ── Helpers ──
 
@@ -70,83 +61,79 @@ def _load_report_data(report: TopicWeeklyReport) -> dict:
 @topics_bp.route("")
 def topic_index() -> str:
     """List all active topics with their latest report dates."""
-    session = _get_session()
-    topics = session.execute(
-        select(Topic).where(Topic.is_active == True).order_by(Topic.sort_order)
-    ).scalars().all()
-
-    topic_data = []
-    for t in topics:
-        latest = session.execute(
-            select(TopicWeeklyReport)
-            .where(TopicWeeklyReport.topic_id == t.id)
-            .order_by(desc(TopicWeeklyReport.report_date))
-            .limit(1)
-        ).scalar_one_or_none()
-
-        article_count = session.execute(
-            select(TopicWeeklyReport)
-            .where(TopicWeeklyReport.topic_id == t.id)
+    with session_scope() as session:
+        topics = session.execute(
+            select(Topic).where(Topic.is_active.is_(True)).order_by(Topic.sort_order)
         ).scalars().all()
 
-        topic_data.append({
-            "slug": t.slug,
-            "title": t.title,
-            "description": t.description,
-            "latest_report_date": latest.report_date if latest else None,
-            "report_count": len(article_count),
-        })
+        topic_data = []
+        for t in topics:
+            latest = session.execute(
+                select(TopicWeeklyReport)
+                .where(TopicWeeklyReport.topic_id == t.id)
+                .order_by(desc(TopicWeeklyReport.report_date))
+                .limit(1)
+            ).scalar_one_or_none()
 
-    session.close()
+            article_count = session.execute(
+                select(TopicWeeklyReport)
+                .where(TopicWeeklyReport.topic_id == t.id)
+            ).scalars().all()
+
+            topic_data.append({
+                "slug": t.slug,
+                "title": t.title,
+                "description": t.description,
+                "latest_report_date": latest.report_date if latest else None,
+                "report_count": len(article_count),
+            })
+
     return render_template("topic_index.html", topics=topic_data)
 
 
 @topics_bp.route("/<slug>")
 def topic_latest(slug: str) -> str:
     """Show the most recent report for a topic."""
-    session = _get_session()
-    topic = session.execute(
-        select(Topic).where(Topic.slug == slug, Topic.is_active == True)
-    ).scalar_one_or_none()
+    with session_scope() as session:
+        topic = session.execute(
+            select(Topic).where(Topic.slug == slug, Topic.is_active.is_(True))
+        ).scalar_one_or_none()
 
-    if not topic:
-        session.close()
-        abort(404)
+        if not topic:
+            abort(404)
 
-    latest = session.execute(
-        select(TopicWeeklyReport)
-        .where(TopicWeeklyReport.topic_id == topic.id)
-        .order_by(desc(TopicWeeklyReport.report_date))
-        .limit(1)
-    ).scalar_one_or_none()
+        latest = session.execute(
+            select(TopicWeeklyReport)
+            .where(TopicWeeklyReport.topic_id == topic.id)
+            .order_by(desc(TopicWeeklyReport.report_date))
+            .limit(1)
+        ).scalar_one_or_none()
 
-    if not latest:
-        # Topic exists but no reports yet
-        session.close()
-        return render_template("topic_detail.html",
-                               topic=topic, report=None)
+        if not latest:
+            # Topic exists but no reports yet
+            return render_template("topic_detail.html",
+                                   topic=topic, report=None)
 
-    report = _load_report_data(latest)
+        report = _load_report_data(latest)
 
-    # Load featured article if set
-    featured = None
-    if latest.featured_article_id:
-        article = session.get(Article, latest.featured_article_id)
-        if article:
-            featured = {"title": article.title, "slug": article.slug}
+        # Load featured article if set
+        featured = None
+        if latest.featured_article_id:
+            article = session.get(Article, latest.featured_article_id)
+            if article:
+                featured = {"title": article.title, "slug": article.slug}
 
-    # Load linked articles
-    linked_articles = []
-    if report["article_ids"]:
-        articles = session.execute(
-            select(Article).where(Article.id.in_(report["article_ids"]))
-        ).scalars().all()
-        linked_articles = [
-            {"title": a.title, "slug": a.slug, "summary": a.summary}
-            for a in articles
-        ]
+        # Load linked articles
+        linked_articles = []
+        if report["article_ids"]:
+            articles = session.execute(
+                select(Article).where(Article.id.in_(report["article_ids"]))
+            ).scalars().all()
+            linked_articles = [
+                {"title": a.title, "slug": a.slug, "summary": a.summary}
+                for a in articles
+            ]
 
-    session.close()
     return render_template("topic_detail.html",
                            topic=topic,
                            report=report,
@@ -157,29 +144,27 @@ def topic_latest(slug: str) -> str:
 @topics_bp.route("/<slug>/archive")
 def topic_archive(slug: str) -> str:
     """Show all archived reports for a topic."""
-    session = _get_session()
-    topic = session.execute(
-        select(Topic).where(Topic.slug == slug, Topic.is_active == True)
-    ).scalar_one_or_none()
+    with session_scope() as session:
+        topic = session.execute(
+            select(Topic).where(Topic.slug == slug, Topic.is_active.is_(True))
+        ).scalar_one_or_none()
 
-    if not topic:
-        session.close()
-        abort(404)
+        if not topic:
+            abort(404)
 
-    reports = session.execute(
-        select(TopicWeeklyReport)
-        .where(TopicWeeklyReport.topic_id == topic.id)
-        .order_by(desc(TopicWeeklyReport.report_date))
-    ).scalars().all()
+        reports = session.execute(
+            select(TopicWeeklyReport)
+            .where(TopicWeeklyReport.topic_id == topic.id)
+            .order_by(desc(TopicWeeklyReport.report_date))
+        ).scalars().all()
 
-    archive = []
-    for r in reports:
-        archive.append({
-            "report_date": r.report_date,
-            "summary": r.summary[:200] if r.summary else "",
-        })
+        archive = []
+        for r in reports:
+            archive.append({
+                "report_date": r.report_date,
+                "summary": r.summary[:200] if r.summary else "",
+            })
 
-    session.close()
     return render_template("topic_archive.html",
                            topic=topic, archive=archive)
 
@@ -187,45 +172,42 @@ def topic_archive(slug: str) -> str:
 @topics_bp.route("/<slug>/<report_date>")
 def topic_report(slug: str, report_date: str) -> str:
     """Show a specific archived report by date."""
-    session = _get_session()
-    topic = session.execute(
-        select(Topic).where(Topic.slug == slug, Topic.is_active == True)
-    ).scalar_one_or_none()
+    with session_scope() as session:
+        topic = session.execute(
+            select(Topic).where(Topic.slug == slug, Topic.is_active.is_(True))
+        ).scalar_one_or_none()
 
-    if not topic:
-        session.close()
-        abort(404)
+        if not topic:
+            abort(404)
 
-    report_row = session.execute(
-        select(TopicWeeklyReport).where(
-            TopicWeeklyReport.topic_id == topic.id,
-            TopicWeeklyReport.report_date == report_date,
-        )
-    ).scalar_one_or_none()
+        report_row = session.execute(
+            select(TopicWeeklyReport).where(
+                TopicWeeklyReport.topic_id == topic.id,
+                TopicWeeklyReport.report_date == report_date,
+            )
+        ).scalar_one_or_none()
 
-    if not report_row:
-        session.close()
-        abort(404)
+        if not report_row:
+            abort(404)
 
-    report = _load_report_data(report_row)
+        report = _load_report_data(report_row)
 
-    featured = None
-    if report_row.featured_article_id:
-        article = session.get(Article, report_row.featured_article_id)
-        if article:
-            featured = {"title": article.title, "slug": article.slug}
+        featured = None
+        if report_row.featured_article_id:
+            article = session.get(Article, report_row.featured_article_id)
+            if article:
+                featured = {"title": article.title, "slug": article.slug}
 
-    linked_articles = []
-    if report["article_ids"]:
-        articles = session.execute(
-            select(Article).where(Article.id.in_(report["article_ids"]))
-        ).scalars().all()
-        linked_articles = [
-            {"title": a.title, "slug": a.slug, "summary": a.summary}
-            for a in articles
-        ]
+        linked_articles = []
+        if report["article_ids"]:
+            articles = session.execute(
+                select(Article).where(Article.id.in_(report["article_ids"]))
+            ).scalars().all()
+            linked_articles = [
+                {"title": a.title, "slug": a.slug, "summary": a.summary}
+                for a in articles
+            ]
 
-    session.close()
     return render_template("topic_detail.html",
                            topic=topic,
                            report=report,

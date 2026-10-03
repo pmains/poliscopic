@@ -1,10 +1,9 @@
 """Theme preview routes — demo different color schemes on front-page content."""
 
 from flask import Blueprint, render_template
-from sqlalchemy import select, desc, and_
-from sqlalchemy.orm import joinedload
+from sqlalchemy import desc, select
 
-from db.core import get_session
+from db.core import session_scope
 from db.newsroom import Article, Tag
 
 themes_bp = Blueprint("themes", __name__, url_prefix="/themes")
@@ -295,22 +294,21 @@ def theme_preview(theme_id):
     if not theme:
         return "Theme not found", 404
 
-    session = get_session()
-    articles = session.execute(
-        select(Article).where(Article.status == "published")
-        .order_by(desc(Article.published_at))
-        .limit(20)
-    ).scalars().all()
+    with session_scope() as session:
+        articles = session.execute(
+            select(Article).where(Article.status == "published")
+            .order_by(desc(Article.published_at))
+            .limit(20)
+        ).scalars().all()
 
-    # Brief 013: featured = 3 most recent published (mirrors front_page)
-    featured = session.execute(
-        select(Article).where(Article.status == "published")
-        .order_by(desc(Article.published_at))
-        .limit(3)
-    ).scalars().all()
+        # Brief 013: featured = 3 most recent published (mirrors front_page)
+        featured = session.execute(
+            select(Article).where(Article.status == "published")
+            .order_by(desc(Article.published_at))
+            .limit(3)
+        ).scalars().all()
 
-    tags = session.execute(select(Tag).order_by(Tag.name)).scalars().all()
-    session.close()
+        tags = session.execute(select(Tag).order_by(Tag.name)).scalars().all()
 
     return render_template(
         "theme_preview.html",
