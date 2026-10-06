@@ -65,9 +65,9 @@ REMEDIATION.md
 # OpenClaw
 .clawhub/
 
-# Docs
+# Private repository documentation (root only; do not hide scripts/docs)
 memory/
-docs/
+/docs/
 
 # Internal docs — not for public source control
 STYLE.md

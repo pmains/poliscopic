@@ -25,23 +25,30 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "scripts"))
 from db import get_engine
 from docs.layout_extract import load_artifact_for_text
+from entities.event_compound_results import attach_compound_result_groups
+from entities.event_outcome_contract import extracted_outcome_fields
+from entities.event_result_context import non_current_result_reason
+from kg.registries.events import canonicalize_outcome
 from sqlalchemy import text
 
 log = logging.getLogger("event_extract")
 
 WATERMARK_TABLE = "_event_extract_watermark"
 BATCH_SIZE = 50
-EXTRACTOR_VERSION = "2026-09-17.2-semantic-guards"
+EXTRACTOR_VERSION = "2026-09-20.2-qualified-outcomes"
 
 # ── Action verb patterns ────────────────────────────────────────────────
 # Ordered by specificity (longer patterns first to avoid sub-matches)
 
 ACTION_PATTERNS = [
     # Multi-word actions (must come before single-word)
-    (r"APPROVED\s+WITH\s+STIPULATIONS",     "approved_with_conditions"),
+    (r"APPROVED\s+WITH\s+STIPULATIONS",     "approved_with_stipulations"),
     (r"APPROVED\s+WITH\s+CONDITIONS",        "approved_with_conditions"),
-    (r"APPROVED\s+SUBJECT\s+TO",             "approved_with_conditions"),
+    (r"APPROVED\s+SUBJECT\s+TO(?:\s+(?:STIPULATIONS|CONDITIONS))?",
+                                                "approved_subject_to"),
+    (r"APPROVED\s+AS\s+AMENDED",             "approved_as_amended"),
     (r"DENIED\s+WITHOUT\s+PREJUDICE",        "denied_without_prejudice"),
+    (r"DENIED\s+AS\s+FILED",                 "denied"),
     (r"RECEIVED\s+AND\s+FILED",              "received"),
     (r"CALLED\s+TO\s+ORDER",                 "called_to_order"),
 
@@ -67,6 +74,7 @@ ACTION_PATTERNS = [
     (r"NO\s+RESPONSE",                       "no_action"),
     (r"FOR\s+DISCUSSION",                    "discussed"),
     (r"PRELIMINARY\s+REVIEW",                "discussed"),
+    (r"INFO(?:RMATION)?\s+ONLY",             "discussed"),
 ]
 
 # Build combined pattern: groups of (full_pattern, outcome)
@@ -79,6 +87,16 @@ ACTION_RE = re.compile(
     "|".join(ACTION_PATTERN_PARTS),
     re.MULTILINE | re.IGNORECASE,
 )
+
+
+def canonical_outcome_for_predicate(predicate: str) -> str:
+    """Map an action predicate to vocabulary without applying context guards."""
+    match = ACTION_RE.search(str(predicate))
+    if match:
+        for index, (_pattern, candidate_outcome) in enumerate(ACTION_PATTERNS):
+            if match.group(f"a{index}"):
+                return canonicalize_outcome(candidate_outcome).base
+    return re.sub(r"\s+", "_", str(predicate).strip().casefold())
 
 # ── Case/project number patterns ────────────────────────────────────────
 CASE_RE = re.compile(
@@ -139,6 +157,18 @@ def _non_result_reason(action: str, row_text: str, start: int, end: int) -> str 
                 r"\s*(?:single-family|multi-?family|resort|ranch|residence)", after
             )
         )
+        or (
+            re.search(
+                r"\b(?:residence|district|commercial|industrial|pcd|pud),\s*$",
+                before,
+            )
+            and re.match(
+                r"\s*(?:intermediate\s+commercial|resort\s+district|"
+                r"single-family|multi-?family|planned\s+community|"
+                r"residential|commercial|industrial)\b",
+                after,
+            )
+        )
     ):
         return "zoning_descriptor"
     if normalized in {"received", "received and filed"} and (
@@ -192,10 +222,15 @@ def extract_events_from_text(
     for scoped_text, scope_start, row, regions in _evidence_scopes(
         text_content, layout_artifact
     ):
+        scope_events = []
         for match in ACTION_RE.finditer(scoped_text):
             action_verb = match.group(0).strip()
             action_start = scope_start + match.start()
             action_end = scope_start + match.end()
+            if non_current_result_reason(
+                action_verb, scoped_text, match.start(), match.end()
+            ):
+                continue
             semantic_start = max(0, action_start - 80)
             semantic_end = min(len(text_content), action_end + 120)
             semantic_context = text_content[semantic_start:semantic_end]
@@ -215,14 +250,27 @@ def extract_events_from_text(
                     for token in candidate.get("tokens", [])
                 )
             ), None)
+            if re.fullmatch(r"info(?:rmation)?\s+only", action_verb, re.I) and not (
+                region
+                and region.get("role") == "result"
+                and region.get("basis") in {
+                    "explicit_result_header_same_visual_row_item",
+                    "explicit_results_visual_column_same_row_item",
+                }
+                and region.get("item_number")
+            ):
+                continue
 
-            outcome = None
+            legacy_outcome = None
             for index, (_pattern, candidate_outcome) in enumerate(ACTION_PATTERNS):
                 if match.group(f"a{index}"):
-                    outcome = candidate_outcome
+                    legacy_outcome = candidate_outcome
                     break
-            if not outcome:
-                outcome = action_verb.lower().replace(" ", "_")
+            if legacy_outcome is None:
+                legacy_outcome = re.sub(r"\s+", "_", action_verb.casefold())
+            outcome_fields = extracted_outcome_fields(
+                legacy_outcome, action_verb, action_start
+            )
 
             if region is not None:
                 raw_text = str(region.get("text", "")).strip()
@@ -247,10 +295,10 @@ def extract_events_from_text(
             else:
                 confidence = 0.9 if column < 15 else 0.7
 
-            events.append({
+            scope_events.append({
                 "raw_text": raw_text[:1000],
                 "action_verb": action_verb,
-                "outcome": outcome,
+                **outcome_fields,
                 "confidence": confidence,
                 "text_offset_start": action_start,
                 "text_offset_end": action_end,
@@ -258,7 +306,19 @@ def extract_events_from_text(
                 "layout_region_id": region.get("region_id") if region else None,
                 "layout_role": region.get("role") if region else None,
                 "layout_item_number": region.get("item_number") if region else None,
+                # Preserve the exact predicate span in ``raw_text`` while
+                # exposing its already-bounded visual row for diagnostics
+                # that must distinguish repeated statuses in one document.
+                "layout_context": scoped_text.strip()[:1000] if region else None,
             })
+
+        events.extend(attach_compound_result_groups(
+            scope_events,
+            document_id=doc_id,
+            evidence_text=scoped_text,
+            evidence_start=scope_start,
+            row_id=str(row.get("row_id")) if row and row.get("row_id") else None,
+        ))
 
     return events
 

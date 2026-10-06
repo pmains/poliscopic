@@ -201,3 +201,39 @@ def test_semantic_guards_preserve_real_results(text, outcome):
 def test_negation_guard_does_not_cross_into_adjacent_result():
     events = extract_events_from_text(1, "Not discussed\nDiscussed")
     assert [event["outcome"] for event in events] == ["discussed"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The Council may discuss the proposed agreement.",
+        "The application will be approved at a future meeting.",
+        "The item was not approved.",
+        "Executive Session: discussion or consultation regarding legal advice.",
+        "Agenda: For discussion and possible action; the plan was discussed.",
+        "The proposal was previously approved by the commission.",
+        "The item was discussed at the prior meeting.",
+        'The minutes state that the item was \"approved\".',
+        "1. Zoning case description  2. Approved",
+    ],
+)
+def test_non_current_result_contexts_fail_closed(text):
+    assert extract_events_from_text(1, text) == []
+
+
+@pytest.mark.parametrize(
+    "text,outcomes",
+    [
+        ("Approved", ["approved"]),
+        ("1. Approved by unanimous vote", ["approved"]),
+        ("Continued to the October 8 meeting", ["continued"]),
+        ("Executive Session concluded; No Action", ["no_action"]),
+        ("Approved following public discussion", ["approved"]),
+    ],
+)
+def test_context_classifier_preserves_current_results_and_offsets(text, outcomes):
+    events = extract_events_from_text(1, text)
+    assert [event["outcome"] for event in events] == outcomes
+    for event in events:
+        start, end = event["text_offset_start"], event["text_offset_end"]
+        assert text[start:end] == event["action_verb"]
