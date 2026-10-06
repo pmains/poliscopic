@@ -164,13 +164,12 @@ def build_human_adjudication_plan(
         if expected_source_references != len(source_references):
             raise ValueError("adjudication source-reference bound does not match current rows")
         stale_mentions = [dict(row._mapping) for row in connection.execute(text("""
-            SELECT * FROM entity_mentions
-            WHERE source_type='pz_item_detail'
-              AND source_id IN (
-                SELECT DISTINCT provenance_id FROM entity_relationships
-                WHERE id IN :ids
-              )
-            ORDER BY id
+            SELECT DISTINCT m.* FROM entity_mentions m
+            JOIN entity_relationships r
+              ON r.provenance_type = m.source_type
+             AND r.provenance_id = m.source_id
+            WHERE r.id IN :ids
+            ORDER BY m.id
         """).bindparams(bindparam("ids", expanding=True)), {
             "ids": sorted(unresolved_by_id),
         }).fetchall()]

@@ -729,8 +729,6 @@ def test_automatic_apply_rejects_failed_repoint_postcondition(
     engine = _automatic_engine()
     plan = _build_automatic_plan(engine)
     _patch_integrity(monkeypatch)
-    original_apply = apply_module._apply_operations
-
     def _partial_apply(connection, operations, *, table, source_id_column):
         # Delete stale rows but never perform the survivor repoint.
         delete_ids = [
@@ -998,6 +996,39 @@ def test_human_plan_accepts_partial_stale_source_group_and_preserves_shared_ment
     assert any(30 in operation["delete_ids"] for operation in mention_operations)
     shared = next(operation for operation in mention_operations if operation["survivor_id"] == 31)
     assert shared["delete_ids"] == ()
+
+
+def test_human_plan_can_explicitly_reject_meeting_member_relationship_and_mention():
+    engine = _human_adjudication_engine()
+    with engine.begin() as connection:
+        connection.execute(text("""
+            INSERT INTO entity_relationships
+                (id, from_entity_id, relationship, to_entity_id,
+                 provenance_type, provenance_id, updated_at)
+            VALUES (5, 14, 'PRESENT_AT', 50, 'meeting_member', 999, NULL)
+        """))
+        connection.execute(text("""
+            INSERT INTO entity_mentions
+                (id, entity_id, source_type, source_id,
+                 role_in_context, extracted_by, updated_at)
+            VALUES (34, 14, 'meeting_member', 999,
+                    'PRESENT_AT', 'graph_builder', NULL)
+        """))
+    adjudication = _human_adjudication()
+    adjudication["rejected_relationships"].append({
+        "relationship_ids": [5],
+        "reason": "Unsupported cross-jurisdiction attendance assertion",
+    })
+    adjudication["rejected_mentions"].append({
+        "mention_ids": [34],
+        "reason": "Mention solely supports the rejected attendance assertion",
+    })
+
+    plan = build_human_adjudication_plan(engine, adjudication)
+
+    assert any(5 in operation["delete_ids"] for operation in plan["relationship_operations"])
+    assert any(34 in operation["delete_ids"] for operation in plan["mention_operations"])
+    assert {row["id"] for row in plan["backup"]["entity_mentions"]} == {30, 31, 32, 33, 34}
 
 
 def test_human_plan_requires_rejection_reason_and_explicit_allowlist():
