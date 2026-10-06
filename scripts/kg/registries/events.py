@@ -118,6 +118,7 @@ OUTCOME_COMPATIBILITY: Mapping[str, tuple[str, str | None]] = frozen({
     "approved_with_conditions": ("approved", "with_conditions"),
     "approved_with_stipulations": ("approved", "with_stipulations"),
     "approved_subject_to": ("approved", "subject_to"),
+    "approved_as_amended": ("approved", "as_amended"),
     "denied_without_prejudice": ("denied", "without_prejudice"),
     "received_and_filed": ("received", None),
     "discussion_only": ("discussed", None),
@@ -131,6 +132,7 @@ QUALIFIER_RAW_FORMS: Mapping[str, tuple[str, ...]] = frozen({
     "with_conditions": ("approved_with_conditions",),
     "with_stipulations": ("approved_with_stipulations",),
     "subject_to": ("approved_subject_to",),
+    "as_amended": ("approved_as_amended",),
     "without_prejudice": ("denied_without_prejudice",),
 })
 
