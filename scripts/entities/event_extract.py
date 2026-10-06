@@ -22,14 +22,22 @@ import sys
 import time
 from datetime import datetime, timezone
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "scripts"))
-from db import get_engine
-from docs.layout_extract import load_artifact_for_text
-from entities.event_compound_results import attach_compound_result_groups
-from entities.event_outcome_contract import extracted_outcome_fields
-from entities.event_result_context import non_current_result_reason
-from kg.registries.events import canonicalize_outcome
-from sqlalchemy import text
+# This stage is also launched as a subprocess with ``cwd=scripts/entities``.
+# Add both import roots so legacy ``from db ...`` imports and package-qualified
+# ``from scripts.kg ...`` imports resolve identically in direct and child runs.
+_ENTITIES_DIR = os.path.dirname(os.path.abspath(__file__))
+_SCRIPTS_DIR = os.path.dirname(_ENTITIES_DIR)
+_REPO_ROOT = os.path.dirname(_SCRIPTS_DIR)
+for _path in (_REPO_ROOT, _SCRIPTS_DIR):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
+from db import get_engine  # noqa: E402
+from docs.layout_extract import load_artifact_for_text  # noqa: E402
+from entities.event_compound_results import attach_compound_result_groups  # noqa: E402
+from entities.event_outcome_contract import extracted_outcome_fields  # noqa: E402
+from entities.event_result_context import non_current_result_reason  # noqa: E402
+from kg.registries.events import canonicalize_outcome  # noqa: E402
+from sqlalchemy import text  # noqa: E402
 
 log = logging.getLogger("event_extract")
 
