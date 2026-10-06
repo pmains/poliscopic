@@ -28,6 +28,8 @@ a separate checker for post-sync analysis and auto-remediation.
 | `sync_report.sh` | Read the latest monitor report. `--json` for machine-readable output. |
 | `sync_summary.sh` | Table of last N days of sync summaries. `--json` for machine-readable. |
 | `sync_error_report.sh` | Extract errors from a specific day's scrape log. |
+| `prod_sync_alert.py` | Opens a production-data incident after 5:00 AM, sends hourly local notifications, alerts immediately on hard failure, and announces recovery. SMTP delivery is separately opt-in. |
+| `../ops/verify_meeting_prod_parity.py` | Requires read-only dev/prod meeting parity before daily production success is recorded. |
 
 ## Data flow
 

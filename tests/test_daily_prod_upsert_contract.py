@@ -28,6 +28,20 @@ def test_public_checks_are_mandatory_before_terminal_marker():
         "scripts/ops/daily_sync_terminal.py", text.index("scripts/db/sync_prod.py"))
 
 
+def test_meeting_parity_and_loud_alerting_are_mandatory():
+    text = SCRIPT.read_text()
+    sync = text.index("scripts/db/sync_prod.py")
+    parity = text.index("verify_meeting_prod_parity.py")
+    marker = text.index("scripts/ops/daily_sync_terminal.py", sync)
+    assert sync < parity < marker
+    assert '--run-date "$RUN_DATE" --lookback-days 7' in text
+    assert "prod_sync_alert.py" in text
+    assert 'ALERT_STATUS="pending"' in text
+    assert "trap alert_on_exit EXIT" in text
+    assert "LOCK_ACQUIRED=1" in text
+    assert "rmdir \"$LOCK\"" in text
+
+
 def test_restore_verified_backup_precedes_the_sync():
     text = SCRIPT.read_text()
     assert text.index("scripts/ops/production_preflight.py") < text.index(

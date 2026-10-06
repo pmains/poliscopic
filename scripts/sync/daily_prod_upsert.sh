@@ -22,9 +22,28 @@ AUTHORIZATION_ID="OP-RECON-standing-daily-sync-v2"
 PY="$ROOT/.venv/bin/python"
 mkdir -p "$SYNC_DIR"
 
+ALERT_STATUS="failure"
+ALERT_REASON_FILE="$SYNC_DIR/.prod-upsert-${RUN_DATE}.alert-reason"
+LOCK_ACQUIRED=0
+alert_on_exit() {
+  RC=$?
+  if [ "$RC" -ne 0 ]; then
+    REASON="daily_prod_upsert.sh exited ${RC}"
+    [ -f "$ALERT_REASON_FILE" ] && REASON="$(cat "$ALERT_REASON_FILE")"
+    "$PY" scripts/sync/prod_sync_alert.py \
+      --status "$ALERT_STATUS" --run-date "$RUN_DATE" --reason "$REASON" || true
+  fi
+  rm -f "$ALERT_REASON_FILE"
+  [ "$LOCK_ACQUIRED" -eq 1 ] && rmdir "$LOCK" 2>/dev/null || true
+  exit "$RC"
+}
+trap alert_on_exit EXIT
+
 if [ -f "$TERMINAL" ]; then
   if "$PY" scripts/ops/daily_sync_terminal.py \
       --output "$TERMINAL" --reconcile-existing; then
+    "$PY" scripts/sync/prod_sync_alert.py --status healthy \
+      --run-date "$RUN_DATE" --reason "existing production terminal is valid" || true
     echo "daily production upsert already complete and accounted for $RUN_DATE"
     exit 0
   fi
@@ -36,10 +55,12 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   echo "daily production upsert already running for $RUN_DATE"
   exit 0
 fi
-trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
+LOCK_ACQUIRED=1
 
 if ! COMPLETION="$(bash scripts/sync/sync_completion_check.sh "$RUN_DATE" 2>&1)"; then
   echo "$COMPLETION"
+  ALERT_STATUS="pending"
+  printf '%s\n' "$COMPLETION" > "$ALERT_REASON_FILE"
   exit 75
 fi
 echo "$COMPLETION"
@@ -68,6 +89,12 @@ BATCH_SIZE="${BATCH_SIZE:-5000}" BATCH_SLEEP_MS="${BATCH_SLEEP_MS:-100}" \
     --preflight "$PREFLIGHT" \
     --backup-receipt "$BACKUP_RECEIPT"
 
+# A zero exit from the upsert is not enough: require every development meeting
+# and synchronized field to be present in production before recording success.
+PARITY="$SYNC_DIR/${ATTEMPT_ID}.meeting-parity.json"
+"$PY" scripts/ops/verify_meeting_prod_parity.py \
+  --run-date "$RUN_DATE" --lookback-days 7 --output "$PARITY"
+
 # Public smoke checks are part of success, not best-effort diagnostics.
 curl -fsS --max-time 30 -o /dev/null https://poliscopic.com/
 curl -fsS --max-time 30 -o /dev/null \
@@ -82,4 +109,6 @@ curl -fsS --max-time 30 -o /dev/null \
   --output "$TERMINAL" \
   --public-url https://poliscopic.com/ \
   --public-url https://poliscopic.com/meetings/tempe-cc/1964
+"$PY" scripts/sync/prod_sync_alert.py --status healthy \
+  --run-date "$RUN_DATE" --reason "production terminal and meeting parity check succeeded" || true
 echo "daily production upsert complete for $RUN_DATE: $TERMINAL"
