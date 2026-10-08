@@ -442,6 +442,37 @@ def _phase_expected_output_check(phase_name: str, raw: dict,
         return {"check": f"expected_output:{phase_name}", "ok": True,
                 "detail": "zero writes on forced replay (expected idempotency)"}
 
+    if phase_name == "pattern_cascade":
+        # A normal incremental run can rediscover only assertions that already
+        # exist. That is successful idempotent work, not a silent zero-output
+        # failure, when every planned mention and edge is terminally accounted
+        # for as an insert, replay collision, or unresolved endpoint.
+        fields = (
+            "mentions_planned", "mentions_created", "mention_replay_collisions",
+            "mentions_unresolved_entity", "edges_planned", "edges_created",
+            "edge_replay_collisions", "edges_unresolved_endpoint",
+        )
+        present = [field for field in fields if field in raw]
+        invalid = invalid_counter_fields(raw, present)
+        if invalid:
+            return {"check": f"expected_output:{phase_name}", "ok": False,
+                    "detail": ("invalid replay accounting counters: "
+                               + ", ".join(invalid))}
+        if len(present) == len(fields):
+            mentions_accounted = raw["mentions_planned"] == (
+                raw["mentions_created"] + raw["mention_replay_collisions"]
+                + raw["mentions_unresolved_entity"]
+            )
+            edges_accounted = raw["edges_planned"] == (
+                raw["edges_created"] + raw["edge_replay_collisions"]
+                + raw["edges_unresolved_endpoint"]
+            )
+            replays = (raw["mention_replay_collisions"]
+                       + raw["edge_replay_collisions"])
+            if mentions_accounted and edges_accounted and replays:
+                return {"check": f"expected_output:{phase_name}", "ok": True,
+                        "detail": f"zero writes with {replays} replay collisions"}
+
     input_fields = ("docs_processed", "items_processed", "total_scanned")
     present_input_fields = [field for field in input_fields if field in raw]
     if "matches" in raw:

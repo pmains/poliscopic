@@ -413,6 +413,28 @@ def test_expected_output_distinguishes_replay_from_unexplained_zero():
     assert replay["ok"] is True
 
 
+def test_pattern_cascade_accepts_fully_accounted_incremental_replays():
+    check = _phase_expected_output_check(
+        "pattern_cascade",
+        {
+            "items_processed": 12541,
+            "matches": 27,
+            "mentions_planned": 27,
+            "mentions_created": 0,
+            "mention_replay_collisions": 27,
+            "mentions_unresolved_entity": 0,
+            "edges_planned": 27,
+            "edges_created": 0,
+            "edge_replay_collisions": 27,
+            "edges_unresolved_endpoint": 0,
+        },
+        {"entities": 0, "entity_mentions": 0, "entity_relationships": 0},
+        force=False,
+    )
+    assert check["ok"] is True
+    assert check["detail"] == "zero writes with 54 replay collisions"
+
+
 def test_event_pending_normalization_cannot_silently_produce_zero():
     check = _phase_expected_output_check(
         "event_pipeline", {"pending": {"normalize": 7}},

@@ -108,6 +108,20 @@ class TestMetadataParsing(unittest.TestCase):
         result = parse_metadata_from_page_data(data)
         self.assertEqual(result["meeting_title"], "Emergency Meeting")
 
+    def test_meeting_header_date_beats_agenda_term_expiration(self):
+        """Meeting 4701 regression: an appointment end date is not the meeting date."""
+        data = {
+            "bodyText": (
+                "BOARD OF SUPERVISORS - JUNTA DE SUPERVISORES\n"
+                "The appointment is effective through 10/1/2028.\n"
+                "Other agenda text follows."
+            ),
+            "headerText": "Formal\n9/30/2026 9:30:00 AM",
+            "formTitle": "BOARD OF SUPERVISORS - JUNTA DE SUPERVISORES",
+        }
+        result = parse_metadata_from_page_data(data)
+        self.assertEqual(result["meeting_date"], "2026-09-30")
+
 
 if __name__ == "__main__":
     unittest.main()

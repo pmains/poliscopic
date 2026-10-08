@@ -151,10 +151,23 @@ def parse_metadata_from_page_data(page_data: dict) -> dict:
     # Title: use header or formTitle
     result["meeting_title"] = (page_data.get("formTitle") or page_data.get("headerText") or "").strip()
 
-    # Date: parse MM/DD/YYYY from body text
-    date_m = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", body)
-    if date_m:
-        result["meeting_date"] = f"{date_m.group(3)}-{int(date_m.group(1)):02d}-{int(date_m.group(2)):02d}"
+    # Date: the meeting header is authoritative. Agenda bodies routinely contain
+    # later dates (appointment terms, contract expirations, hearing deadlines), so
+    # taking the first date from the whole page can silently move the meeting.
+    # Keep body text only as a compatibility fallback for pages whose header omits
+    # the date entirely.
+    for date_source in (
+        page_data.get("headerText", ""),
+        page_data.get("formTitle", ""),
+        body,
+    ):
+        date_m = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", date_source or "")
+        if date_m:
+            result["meeting_date"] = (
+                f"{date_m.group(3)}-{int(date_m.group(1)):02d}"
+                f"-{int(date_m.group(2)):02d}"
+            )
+            break
 
     # Type: look for Formal Meeting / Informal Meeting in body
     type_m = re.search(r"\b(FORMAL|INFORMAL)\s+MEETING\b", body, re.I)
@@ -271,5 +284,4 @@ async def extract_agenda_items_for_meeting(page, meeting: dict[str, str]) -> lis
     }
     from scraper.common.agenda_items import parse_agenda_items_from_html
     return parse_agenda_items_from_html(html, source_url, normalized_meeting)
-
 
