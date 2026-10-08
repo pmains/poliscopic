@@ -1,61 +1,112 @@
-# Sync Pipeline — `scripts/sync/`
+# Daily scraping and production synchronization
 
-The daily sync pipeline discovers, extracts, and persists meeting data from all
-Maricopa County jurisdictions. It runs as a fire-and-forget cron pipeline with
-a separate checker for post-sync analysis and auto-remediation.
+This directory contains the two operational lanes that move civic data:
 
-## Files
+1. the development scrape/entity pipeline; and
+2. the separately guarded development-to-production upsert.
 
-### Pipeline stages (execution order)
+They are intentionally independent. A successful scrape does not authorize a
+production write, and a scheduler process exit is not success unless the
+required terminal artifacts validate.
 
-| File | Stage | Purpose |
-|---|---|---|
-| `sync_log.sh` | **Scrape + entities** | THE daily command. Wraps `run_pipeline.py` (all jurisdictions: agendas, minutes, supporting docs) + Step 7 `detect_entities.py` with structured logging, gzips output to `data/sync/YYYY-MM-DD.log.gz`, writes a summary file. |
-| `sync_launcher.sh` | **Launch (legacy)** | Former cron entry point with concurrency guards. The live cron now calls `sync_log.sh` directly — only needed if re-wiring the guard. |
-| `sync_checker.sh` | **Verify (not scheduled)** | Checks sync completion and runs `sync_monitor.py` analysis. Not currently wired to any cron job. |
-| `sync_monitor.py` | **Analyze** | Post-sync diagnostics: counts by status, recent failures, stuck jobs, orphans. Auto-remediation for known error patterns. Writes report to `data/sync/YYYY-MM-DD-monitor.txt`. |
+## Development scrape lane
 
-### Production deploy wrapper
-
-| File | Purpose |
-|---|---|
-| `sync_prod.sh` | Pre-check (verifies daily scrape succeeded), then launches `sync.sh` (project root) in background for full prod deploy + DB sync. |
-
-### User-facing utilities
-
-| File | Purpose |
-|---|---|
-| `sync_report.sh` | Read the latest monitor report. `--json` for machine-readable output. |
-| `sync_summary.sh` | Table of last N days of sync summaries. `--json` for machine-readable. |
-| `sync_error_report.sh` | Extract errors from a specific day's scrape log. |
-| `prod_sync_alert.py` | Opens a production-data incident after 5:00 AM, sends hourly local notifications, alerts immediately on hard failure, and announces recovery. SMTP delivery is separately opt-in. |
-| `../ops/verify_meeting_prod_parity.py` | Requires read-only dev/prod meeting parity before daily production success is recorded. |
-
-## Data flow
-
-```
-cron (3 AM) → sync_log.sh --parallel
-                  ↓
-            run_pipeline.py (scrape: agendas, minutes, supporting docs)
-                  ↓
-            detect_entities.py (Step 7: 6-phase entity pipeline)
-                  ↓
-            data/sync/YYYY-MM-DD.log.gz + summary + entities log
-```
-
-## Usage
+`runner.py` builds daily and weekly plans from
+`scripts/scraper/source_registry.py`. The registry owns scheduled identities,
+jurisdictions, execution groups, invocation commands, date-window support, and
+body selections.
 
 ```bash
-# THE daily command — scrape everything + run entity pipeline (what the 3 AM cron runs)
-bash scripts/sync/sync_log.sh --parallel
+# Inspect the complete registered plan without network or database writes
+PYTHONPATH=scripts uv run python scripts/sync/runner.py --dry-run
+PYTHONPATH=scripts uv run python scripts/sync/runner.py --tier weekly --dry-run
 
-# User utilities
-scripts/sync/sync_summary.sh              # Last 7 days overview
-scripts/sync/sync_summary.sh 14 --json    # Last 14 days as JSON
-scripts/sync/sync_report.sh               # Today's monitor report
-scripts/sync/sync_error_report.sh         # Today's errors
-
-# Production deploy (after daily scrape completes)
-scripts/sync/sync_prod.sh                 # Full: deploy code + sync data
-scripts/sync/sync_prod.sh --code-only     # Code only, skip DB sync
+# Run the ordinary daily wrapper
+bash scripts/sync/sync_log.sh
 ```
+
+The wrapper records dated logs, summaries, metrics, and post-scrape entity-gate
+state under ignored `data/sync/` storage. `sync_completion_check.sh` validates
+both levels for one date:
+
+```bash
+bash scripts/sync/sync_completion_check.sh
+bash scripts/sync/sync_completion_check.sh 2026-10-07
+```
+
+Success requires a valid scrape summary and log, numeric pre/post metrics, no
+surviving pipeline process, and a passing entity gate from the same dated
+lineage.
+
+The repository includes a launchd template for the scrape lane. Its checked-in
+paths and schedule are examples for this workstation deployment, not portable
+installation defaults; inspect them before loading on another host.
+
+## Production upsert lane
+
+`daily_prod_upsert.sh` is the deterministic production-data entry point. It is
+designed for a scheduler rather than an interactive or model-driven turn. It
+returns:
+
+- `0` when the date was already complete or completed successfully;
+- `75` when same-day scrape/entity lineage is not ready and should be retried;
+- another nonzero code for a production incident.
+
+Before writing, it requires the completion check, a fresh production preflight,
+a snapshot-consistent backup that passes scratch restore, and a valid standing
+authorization. The database operation is upsert-only. It never propagates
+deletions or performs reconciliation, schema changes, repairs, or code
+deployment.
+
+After writing, it requires recent meeting parity and public HTTP smoke checks
+before creating the immutable daily terminal receipt. Failures and late missing
+terminals feed `prod_sync_alert.py`; recovery is also announced.
+
+Read-only status:
+
+```bash
+bash scripts/sync/daily_prod_upsert_status.sh
+bash scripts/sync/daily_prod_upsert_status.sh 2026-10-07
+```
+
+Manual execution changes production data and is not authorized merely by this
+documentation. Follow
+[`briefs/PRODUCTION-OPERATIONS-CHECKLIST.md`](../../briefs/PRODUCTION-OPERATIONS-CHECKLIST.md)
+and use only the authorization bound to the intended operation, code, tables,
+and date/use limits.
+
+## Supporting commands
+
+| Command | Purpose |
+|---|---|
+| `sync_summary.sh` | Summarize recent development scrape results |
+| `sync_report.sh` | Show the most recent development monitor report |
+| `sync_error_report.sh` | Extract errors for a scrape date |
+| `sync_checker.sh` | Run read-only post-scrape diagnostics |
+| `daily_prod_upsert_status.sh` | Validate the production terminal and public health |
+| `maintenance_prod_upsert.sh` | Guarded maintenance wrapper; not the daily scheduler |
+| `prod_sync_alert.py` | Incident, repeat, and recovery notifications |
+| `entity_gate_verdict.py` | Validate the entity gate for one dated run |
+
+## Artifacts and success semantics
+
+Operational artifacts live under `data/` and are intentionally not committed.
+Important examples include:
+
+- `data/sync/YYYY-MM-DD-summary.txt` — development scrape summary and metrics;
+- `data/sync/entity-run-YYYY-MM-DD.json` — same-day entity pipeline state;
+- `data/sync/prod-upsert-YYYY-MM-DD.terminal.json` — immutable production
+  success receipt;
+- `data/backups/daily-production/` — rolling restore-verified production
+  backups and receipts; and
+- attempt-specific preflight and meeting-parity reports.
+
+Logs are diagnostic evidence, not success by themselves. The validated terminal
+receipt is the authority for a completed production upsert.
+
+## Related entry points
+
+- [`scripts/README.md`](../README.md) — scraper and document-ingestion commands
+- [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md) — component and data flow
+- [`docs/DOCUMENT-EXTRACTION.md`](../../docs/DOCUMENT-EXTRACTION.md) — OCR and
+  layout evidence contract

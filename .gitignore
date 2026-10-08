@@ -26,6 +26,15 @@ TOOLS.md
 # OpenClaw agent config
 .openclaw/
 
+# Local coding-agent and MCP-client configuration
+.claude/
+.codex/
+.agents/
+.cursor/
+.gemini/
+.berry/
+.mcp.json
+
 # Python cache
 __pycache__/
 *.py[cod]
@@ -44,6 +53,8 @@ Thumbs.db
 
 # Environment
 .env
+.env.*
+!.env.example
 *.sqlite
 *.sqlite3
 
@@ -65,9 +76,22 @@ REMEDIATION.md
 # OpenClaw
 .clawhub/
 
-# Private repository documentation (root only; do not hide scripts/docs)
+# Private repository documentation. Keep the public architecture, extraction
+# contract, and active remediation records durable.
 memory/
-/docs/
+/docs/*
+!/docs/ARCHITECTURE.md
+!/docs/DOCUMENT-EXTRACTION.md
+!/docs/briefs/
+/docs/briefs/*
+!/docs/briefs/README.md
+!/docs/briefs/041-codebase-security-and-organization-remediation.md
+!/docs/briefs/042-production-operationalization-and-jurisdiction-architecture.md
+!/docs/briefs/progress/
+/docs/briefs/progress/*
+!/docs/briefs/progress/README.md
+!/docs/briefs/progress/041.md
+!/docs/briefs/progress/042.md
 
 # Internal docs — not for public source control
 STYLE.md
@@ -126,6 +150,14 @@ workflows/
 
 # Temp files
 tmp/
+
+# Generated browser-test state and reports
+test-results/
+playwright-report/
+blob-report/
+
+# Local editorial drafts
+admin/drafts/
 
 # Generated podcast media (large audio files)
 static/podcast/

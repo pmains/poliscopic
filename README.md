@@ -1,347 +1,221 @@
-# Poliscopic — Arizona Public Governance & Development Intelligence
+# Poliscopic
 
-Extract, organize, and persist public governance materials and development
-permit data from Arizona jurisdictions.
+Poliscopic is a public-meeting ingestion, search, and civic-intelligence
+platform for Arizona. It collects meetings, agenda items, minutes, votes, and
+supporting documents from independent municipal, county, and regional
+governments; extracts searchable text and layout-aware OCR evidence; and serves
+the resulting record through a Flask website and newsletter system.
 
-> ## ⚠ Before ANY production operation
->
-> **Read and complete [`briefs/PRODUCTION-OPERATIONS-CHECKLIST.md`](briefs/PRODUCTION-OPERATIONS-CHECKLIST.md).**
->
-> That file is the **single authority** for production operations. It classifies the
-> operation, defines the ordered gates (scheduler state and production hold → source
-> commit → manifest digest → tests → read-only preflight → protected backup →
-> digest-bound plan → human authorization → one bounded execution → terminal receipt
-> → postconditions and HTTP checks → rollback decision → scheduler re-enable), and
-> states the STOP condition for each.
->
-> **Only one production mutation kind per authorization.** There are six operation
-> kinds (`OP-DEV`, `OP-CODE`, `OP-SCHEMA`, `OP-REPAIR`, `OP-RECON`, `OP-RESTORE`) and
-> no checklist run or authorization may cover more than one of them.
->
-> **Current posture: production writing is PAUSED and the release is BLOCKED.**
-> `maricopa-prod-sync` and `maricopa-sync-checker` are disabled; the 3 AM
-> `maricopa-daily-sync` run is development-only and remains enabled. The OpenClaw
-> scheduler is the source of truth for job state, and a code change must never
-> re-enable a disabled job.
->
-> Note: `.gitignore` ignores the `docs/` and `data/` trees. Anything under those
-> paths is local and **non-authoritative**; the tracked `briefs/` copy governs.
+Tempe, Maricopa County, MAG, and the other covered governments are modeled as
+peer jurisdictions. Geographic containment does not imply that a city reports
+to a county.
 
-## What it does
+## What is in this repository
 
-Poliscopic ingests and displays two categories of public data:
+- Multi-platform scrapers for OnBase, Legistar, Granicus, CivicClerk,
+  AgendaQuick/Destiny, NovusAgenda, and jurisdiction-specific sources.
+- A PostgreSQL data model for jurisdictions, public bodies, meetings, agenda
+  items, documents, people, votes, cases, entities, and articles.
+- A governed document pipeline that retains searchable text plus page/word/table
+  evidence and uses Tesseract for scanned pages.
+- A Flask application for meetings, calendars, public bodies, members, search,
+  articles, topics, and newsletters.
+- Daily scrape, validation, and guarded development-to-production upsert tools.
 
-### Meeting & Agenda Tracking
+Historical permit tables remain in the database for compatibility, but permits
+are not a current product surface or ingestion workflow.
 
-- BOS, P&Z, Board of Adjustment, Board of Health, Drainage Review Board,
-  Transportation Advisory Board, Industrial Development Authority, Tempe City
-  Council, and other Tempe boards
-- Agenda item and supporting document extraction
-- Vote tracking and case-number cross-referencing
+## Repository map
 
-### Development Permit Analysis
+```text
+app.py                    Development web entry point
+routes/                   Flask application factory and route blueprints
+src/poliscopic/           Installable package: configuration, paths, database
+                          core/models, and repository modules
+scripts/scraper/          Source registry, platform adapters, jurisdiction
+                          adapters, CLI, and scrape orchestration
+scripts/docs/             Document acquisition, extraction, and layout evidence
+scripts/entities/         Entity and event extraction
+scripts/sync/             Daily scraping, verification, and production-upsert
+                          orchestration
+templates/, static/       Web presentation assets
+tests/                    Unit, integration, safety, and operations tests
+briefs/                   Durable production-operation contracts and records
+docs/                     Public architecture and extraction documentation
+data/                     Generated local data, logs, receipts, and backups;
+                          intentionally excluded from Git
+```
 
-Structured permit data from **four jurisdictions** with cross-jurisdiction
-category and work-type normalization:
+Canonical reusable code lives under `src/poliscopic/`. Root application files
+and some modules under `scripts/` remain explicit compatibility or operational
+entry points.
 
-| Jurisdiction | Records | Source | Coverage |
-|---|---|---|---|
-| **City of Phoenix** | ~728,000 | PDD CSV Export | 2004–present |
-| **Maricopa County** | ~150,000 | Weekly XLSX reports | 2012–present |
-| **City of Tempe** | ~19,000 | ArcGIS FeatureServer | 2019–present |
-| **City of Chandler** | ~1,700 | DSActiveProjects | 2017–2025 |
-
-Phoenix provides the richest dataset with valuation, zoning, parcel numbers,
-contractor, owner, and completion dates. Data is normalized into a shared
-category model (Residential, Commercial, Industrial, Mixed-Use, Other) and
-work type model (New Construction, Addition, Alteration, Trade, Demolition,
-Infrastructure, Unknown).
-
-### Web App
-
-Bootstrap 5 Flask UI with:
-- Permit overview with summary charts and category breakdowns
-- Year, jurisdiction, category, and work-type filter panel
-- Summary and raw-permit views with pagination
-- Meeting browser with sync status badges and detail pages
-- Jurisdiction-aware member rosters and voting records
+See [Architecture](docs/ARCHITECTURE.md) for component boundaries and data flow,
+[Document Extraction](docs/DOCUMENT-EXTRACTION.md) for the OCR/layout contract,
+and [Scripts](scripts/README.md) for command entry points.
 
 ## Requirements
 
-- Python 3.10–3.14 (3.11 or 3.12 recommended for the broadest ML compatibility)
-- Playwright (with Chromium browser) — for browser-backed scraping
-- PyMuPDF and pdfplumber — native text, word geometry, and table extraction
-- `pdftotext` (poppler-utils) — layout-preserving PDF fallback
-- Tesseract 5 — local TSV OCR for image-only pages
-- SQLAlchemy
-- Flask (with Flask-Caching for route-level caching)
-- openpyxl (for XLSX permit report parsing)
-- xlrd (for legacy XLS permit report parsing)
+- Python 3.10 through 3.14; Python 3.12 is the recommended baseline.
+- PostgreSQL for persistent development and production data.
+- [uv](https://docs.astral.sh/uv/) 0.12.x for the locked environment, or `pip`
+  as a compatibility fallback for the core runtime.
+- Chromium installed through Playwright for browser-backed sources.
+- Poppler (`pdftotext`) and Tesseract 5 for document extraction.
 
-Install:
+On macOS, install the non-Python dependencies with:
 
 ```bash
-pip install -r requirements.txt
-playwright install chromium
-brew install poppler        # macOS — provides pdftotext
-brew install tesseract      # macOS — OCR with word boxes/confidence
+brew install poppler tesseract
 ```
 
-`pyproject.toml` records supported Python versions, dependency groups, and
-quality-tool configuration. `uv sync --frozen` installs the canonical
-`src/poliscopic` package and the locked core environment; use
-`uv sync --frozen --extra dev` for tests and quality tools. Root application
-and command files remain compatibility/deployment shims while their
-implementations migrate into the package in bounded slices.
+## Install for development
 
-### Dependencies
-
-Core:
-```
-flask
-flask-caching
-sqlalchemy
-playwright
-openpyxl
-xlrd
-```
-
-Document extraction uses a governed native → Poppler → Tesseract cascade and
-stores coordinate-aware layout artifacts alongside retained text. See
-[Document Extraction and Layout Evidence](docs/DOCUMENT-EXTRACTION.md).
-
-## Usage
-
-### Web App
+Clone the repository, then create the locked environment:
 
 ```bash
-python app.py
-# Opens at http://127.0.0.1:5001/meetings
+git clone git@github.com:pmains/poliscopic.git
+cd poliscopic
+uv sync --extra dev
+uv run playwright install chromium
 ```
 
-Browse meetings and public bodies with filters, supporting documents, voting
-records, member information, and pagination.
+Add `--extra editorial` for optional editorial API integrations or `--extra ml`
+for model experiments. The ML extra is large and is not needed for the web app,
+scrapers, OCR pipeline, or ordinary tests.
 
-### Database
+If uv is unavailable, the core runtime can be installed with:
 
 ```bash
-# Initialize/migrate the database
-python scripts/agenda_scraper.py --init-db
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/playwright install chromium
 ```
 
-## Board of Supervisors (BOS)
-
-Commands default to BOS when no subcommand is given. The `bos` subcommand is
-optional for BOS operations.
-
-### Sync a single meeting
+Copy the environment template and set a development database URL:
 
 ```bash
-python scripts/agenda_scraper.py --sync --meeting-id=4449
+cp .env.example .env
 ```
 
-Or with explicit subcommand:
+At minimum, development needs:
+
+```dotenv
+POLISCOPIC_DB_TIER=development
+DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/poliscopic_dev
+FLASK_SECRET_KEY=replace-with-a-random-local-secret
+POLISCOPIC_COOKIE_SECURE=false
+```
+
+The database resolver fails closed: a development process refuses a
+production-looking target, the test tier accepts only local SQLite, and the
+production tier accepts only a production-classified PostgreSQL target.
+Credentials belong in `.env` or the deployment secret store, never in Git.
+
+Create or update a non-production application database explicitly:
 
 ```bash
-python scripts/agenda_scraper.py bos --sync --meeting-id=4449
+uv run python scripts/bootstrap_app_db.py
 ```
 
-### Sync a date range
+Application startup does not create schemas or seed rows. The bootstrap command
+refuses the production tier; production schema work follows the separately
+authorized `OP-SCHEMA` procedure.
+
+## Run the application
 
 ```bash
-# Discover and sync all meetings between two dates
-python scripts/agenda_scraper.py bos --sync --start-date=2025-01-01 --end-date=2025-01-31
-
-# Resume previously failed/partial/pending meetings (no date range needed)
-python scripts/agenda_scraper.py bos --sync --retry-failed
+uv run python app.py
 ```
 
-### Sync resumable flags
+The development server listens on `http://127.0.0.1:5001` by default. Set
+`FLASK_PORT` to use another port.
 
-| Flag | Description |
-|---|---|
-| `--retry-failed` | Only process meetings with `failed`, `partial`, or `pending` status |
-| `--force` | Re-sync everything, including already-complete meetings |
-| `--retry-count N` | Max retry attempts per meeting (default 3) |
-| `--skip-complete` | Skip complete meetings when using `--meeting-id` |
-| `--include-manual-review` | Include `manual_review` meetings in retry operations |
+Important public routes include:
 
-### Status & inspection
+- `/` — articles and upcoming meetings
+- `/calendar` and `/meetings` — meeting discovery
+- `/meetings/<body>/<meeting_id>` — meeting and agenda detail
+- `/bodies` and `/bodies/<slug>` — jurisdictions, bodies, and rosters
+- `/members/<id>` — member history and voting record
+- `/search` — searchable civic records
+
+Administrative and annotation tools are disabled by default and require both
+explicit configuration and an authenticated administrator.
+
+## Scrape and inspect data
+
+The source registry is the authority for scheduled scraper identity,
+jurisdiction ownership, invocation mode, and date-window support.
 
 ```bash
-# Summary of sync status across all meetings
-python scripts/agenda_scraper.py --status
+# Show the complete daily plan without running sources
+PYTHONPATH=scripts uv run python scripts/sync/runner.py --dry-run
 
-# List failed/partial meetings
-python scripts/agenda_scraper.py --failed
+# Run one registered source (example)
+uv run python scripts/scrape_agendas.py peoria --sync --year=2026
 
-# List meetings needing manual review (image-based agendas)
-python scripts/agenda_scraper.py --failed --include-manual-review
+# Inspect document-ingestion backlog
+PYTHONPATH=scripts uv run python scripts/ingest_docs.py --status
 ```
 
-### Vote syncing
+Source-specific options are available with `--help`. New jurisdiction adapters
+belong under `scripts/scraper/jurisdictions/`; reusable vendor behavior belongs
+under `scripts/scraper/platforms/`; shared source metadata belongs in
+`scripts/scraper/source_registry.py` and
+`scripts/scraper/jurisdiction_registry.py`.
+
+## Test and lint
 
 ```bash
-# Extract roll-call votes from a meeting's summary page
-python scripts/agenda_scraper.py bos --sync-votes --meeting-id=4449
+uv run pytest
+uv run ruff check src routes scripts tests
 ```
 
-## Planning & Zoning (PZ)
+Tests default to an isolated temporary SQLite database. Tests that exercise
+external sites or machine-local operational artifacts may be skipped unless
+their prerequisites are present.
 
-Use the `pz` subcommand. All date flags use YYYY-MM-DD format.
+## Daily operations and production safety
 
-```bash
-# Sync P&Z meetings by date range
-python scripts/agenda_scraper.py pz --sync --start-date=2026-01-01 --end-date=2026-05-01
+Development scraping and production synchronization are distinct lanes:
 
-# Sync a single P&Z meeting by ID
-python scripts/agenda_scraper.py pz --sync --meeting-id=3734
+1. The daily scraper writes and verifies development data.
+2. The production upsert lane checks same-day lineage, entity quality,
+   authorization, a restore-verified backup, meeting parity, and public HTTP
+   health before recording a successful terminal receipt.
+3. Newsletter publication and delivery have their own guarded operating state.
 
-# Limit the number of meetings from a date range search
-python scripts/agenda_scraper.py pz --sync --start-date=2026-01-01 --limit=5
-```
+Production mutation is never implied by a code change or a successful scrape.
+Before any production operation, read and follow
+[the production operations checklist](briefs/PRODUCTION-OPERATIONS-CHECKLIST.md).
+It defines the operation classes (`OP-CODE`, `OP-SCHEMA`, `OP-REPAIR`,
+`OP-RECON`, `OP-RESTORE`), required approvals, backups, postconditions, and
+rollback rules. Current job state belongs in terminal receipts and status tools,
+not in this README.
 
-When no start/end date is given, PZ defaults to the last 90 days.
+Operational commands and status probes are documented in
+[scripts/sync/README.md](scripts/sync/README.md).
 
-### How P&Z sync works
+## Data and local configuration
 
-1. **Search** — queries the AgendaCenter search page for PZ meetings
-2. **Overview page** — visits the meeting's document-index page
-3. **Agenda PDF** — identifies the actual agenda document (not staff reports)
-4. **PDF parsing** — downloads the agenda PDF, extracts real agenda items
-   (numbered items with case numbers, project names, applicants, etc.)
-5. **Staff reports** — staff-report documents from the overview page are linked
-   to agenda items by case number as supporting documents
+The following are deliberately not versioned:
 
-The overview page (document index) is **not** treated as the agenda. ZIPPOR
-meetings (Zoning Infrastructure Policy Procedure Ordinance Review) are
-supported but use a different PDF format with slightly different item
-structure.
+- `.env` files and credentials
+- local agent/editor/MCP configuration
+- downloaded documents, database snapshots, logs, receipts, and backups under
+  `data/`
+- browser-test output and local editorial drafts
+- uploaded production media and model checkpoints
 
-## Body-Scoped Identity
+`.env.example` is the only environment template intended for source control.
+Do not add secrets, host certificates, database dumps, or generated OCR/model
+artifacts to the repository.
 
-All bodies (BOS, PZ, ADJ, DRAIN, Health, TAB, IDA, Tempe bodies) use separate
-`body` namespaces so meeting IDs never collide. This allows one-click
-cross-referencing: when a PZ case number appears on a BOS agenda item (or vice
-versa), both meetings can be found without ID prefix hacks.
+## Contributing
 
-Body-scoped filtering is available in the web UI.
-
-## Routes
-
-| Path | Description |
-|---|---|
-| `/` | Homepage — navigate to meetings and public bodies |
-| `/meetings` | Meeting list with search, filter, and pagination |
-| `/meetings/<body>/<meeting_id>` | Meeting detail — agenda items, documents, votes |
-| `/bodies` | Public bodies index — all jurisdictions and their bodies |
-| `/bodies/<slug>` | Body detail — paginated member roster |
-| `/members` | Unified member index (redirects to /bodies) |
-| `/members/<id>` | Individual member profile and voting record |
-| `/members/<slug>/analytics` | Voting analytics for a member |
-| `/c-number/<c_number_base>` | Case number revision history |
-
-## Data Model
-
-See `scripts/db/models.py` and `scripts/db/newsroom.py` for the SQLAlchemy model
-definitions.
-
-Key entities:
-- **Jurisdiction** — A county, city, or town (e.g., Maricopa County, City of Phoenix)
-- **PublicBody** — A board, commission, or committee within a jurisdiction
-- **PublicBodyMember** — A person who serves or served on a public body (title, district/seat, date range)
-- **Meeting** — A meeting of a public body with agendas, documents, and voting records
-
-## Database Schema (Legacy)
-
-- **meetings** — sync status, item counts, retry tracking, body scope
-- **agenda_items** — individual agenda items with C-numbers and case numbers
-- **supporting_documents** — attachment documents linked to items
-- **meeting_supervisors** — supervisor attendance per meeting
-- **agenda_item_votes** — roll-call vote results per item
-- **supervisor_votes** — individual supervisor votes
-- **pz_item_details** — structured P&Z metadata (case number, district, project
-  name, applicant, request, location, recommendation)
-- **cases** — case numbers tracked across meetings
-- **case_events** — event history per case (agenda appearance, hearings, votes)
-- **jurisdictions** — Government jurisdictions (counties, cities, towns)
-- **public_bodies** — Boards, commissions, committees within a jurisdiction
-- **permits**, **permit_reports** — retained historical tables from the retired
-  permit feature; no current route, scraper, or sync workflow writes them
-- **public_body_members** — Membership roster for public bodies
-- **meeting_attendance** — Per-meeting attendance records
-- **member_votes** — Generalized vote records for non-BOS bodies
-- **executive_session_participants** — BOS executive session advisors
-
-The `sync_status` field tracks:
-- `complete` — successfully extracted and persisted
-- `partial` — items extracted but supporting docs failed
-- `failed` — network/parse error, worth retrying
-- `manual_review` — page loaded but image-based/unparseable format
-- `pending` — discovered but not yet synced
-
-## Project Structure
-
-```
-scripts/
-  scraper/
-    agenda_scraper.py      Main agenda/meeting scraper CLI
-    ...
-  db.py                    Persistence layer (SQLAlchemy models)
-app.py                     Flask web application
-templates/
-  base.html                Base template
-  meetings.html            Meeting list with pagination
-  meeting_detail.html      Meeting detail with items/docs/votes
-  ...
-data/
-  maricopa.sqlite          SQLite database
-  phoenix/                 Phoenix discovery artifacts (ArcGIS metadata, samples)
-```
-
-## Tests
-
-```bash
-# Run the full test suite
-python -m unittest discover -s tests
-# or
-python -m pytest tests/
-```
-
-## Performance Optimizations
-
-### SQLite PRAGMAs
-
-The following PRAGMAs are applied automatically on every connection:
-
-| PRAGMA | Value | Effect |
-|---|---|---|
-| `journal_mode` | WAL | Concurrent reads + writes without lock contention |
-| `synchronous` | NORMAL | Reduces fsync calls without risking corruption |
-| `temp_store` | MEMORY | Temp tables/indices live in RAM |
-| `cache_size` | -20000 | 20 MB page cache |
-| `foreign_keys` | ON | Enforce referential integrity |
-
-### Server-Side Caching
-
-Flask-Caching caches the following routes:
-
-| Route | Cache TTL | Notes |
-|---|---|---|
-| `/meetings` | 60s | Varies by query string (body, type, date, page) |
-| `/meetings/<id>` | 120s | Per-meeting detail |
-| `/members` | 120s | Member directory |
-
-The cache directory is `.cache/flask-cache/` and is auto-created.
-
-### Request Timing
-
-Every request over 1 second is logged as a warning with the elapsed time:
-Slow requests include their path and elapsed time in the warning log.
-
-### Benchmarking
-
-```bash
-# Requires the Flask app to be running on :5001
-python scripts/benchmark.py
-```
+Keep changes in coherent batches and include tests for scraper parsing,
+database ownership, and safety boundaries. Do not infer government hierarchy
+from geography. Do not add direct plain-text document writers: persisted
+supporting-document text must pass through the governed extraction API so its
+source and layout evidence remain traceable.
