@@ -1,0 +1,44 @@
+# water-environment.yaml — Water & Environment newsletter
+name: water-environment
+description: "Water & Environment newsletter — water supply, CAP, wastewater, air quality, flood control"
+display_name: "Water & Environment Weekly Digest"
+max_run_minutes: 180
+max_retries: 2
+embedding_query: "Water and environmental policy issues: water supply, drought management, groundwater management, groundwater replenishment, Central Arizona Project, CAP allocations, water agreements, wastewater treatment, wastewater infrastructure, stormwater management, flood control, water rights, water transfers, reclaimed water, effluent use, water conservation, watershed management, environmental policy, environmental regulation, air quality monitoring, air quality permits, pollution control, PM10, PM2.5, dust control, flood control district, climate adaptation, climate resilience, water infrastructure"
+
+steps:
+  - name: classify
+    instructions: "workflows/water-environment/01-classify/instructions.md"
+    output_dir: "{RUN_DIR}/staged/"
+    timeout_min: 30
+    max_retries: 2
+  - name: enrich
+    instructions: "workflows/shared/02-enrich/instructions.md"
+    input_dir: "{RUN_DIR}/staged/"
+    output_dir: "{RUN_DIR}/enriched/"
+    timeout_min: 10
+    max_retries: 2
+  - name: summarize
+    instructions: "workflows/shared/03-summarize/instructions.md"
+    input_dir: "{RUN_DIR}/enriched/"
+    output_dir: "{RUN_DIR}/summarized/"
+    timeout_min: 30
+    max_retries: 2
+  - name: verify
+    instructions: "workflows/shared/04-verify/instructions.md"
+    input_dir: "{RUN_DIR}/summarized/"
+    output_dir: "{RUN_DIR}/verified/"
+    timeout_min: 15
+    max_retries: 2
+  - name: send
+    instructions: "workflows/shared/05-send/instructions.md"
+    input_dir: "{RUN_DIR}/verified/"
+    output_dir: "{RUN_DIR}/send-output/"
+    timeout_min: 5
+    max_retries: 1
+  - name: publish
+    instructions: "workflows/shared/06-publish/instructions.md"
+    input_dir: "{RUN_DIR}/verified/"
+    output_dir: "{RUN_DIR}/publish-output/"
+    timeout_min: 15
+    max_retries: 1

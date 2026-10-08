@@ -1,0 +1,51 @@
+# boards-commissions.yaml — Boards & Commissions newsletter
+name: boards-commissions
+description: "Boards & Commissions newsletter — P&Z, Board of Adjustment, IDA, HOME, Air Quality Commission"
+display_name: "Boards & Commissions Weekly Digest"
+max_run_minutes: 180
+max_retries: 2
+# HARD SCOPE (Pete 2026-09-17): this digest covers Maricopa County
+# boards and commissions ONLY.  Other jurisdictions (cities, towns, MAG,
+# Valley Metro) must never appear.  Enforced deterministically here in
+# addition to the classify instructions — semantic scoping alone let
+# Chandler/Tempe/Tucson/MAG items through.
+jurisdictions:
+  - "Maricopa County"
+embedding_query: "Maricopa County boards and commissions: Planning and Zoning Commission, zoning cases, general plan amendments, Board of Adjustment, variance requests, special use permits, Industrial Development Authority, IDA, bond issuances, development incentives, Transportation Advisory Board, road planning, transit planning, Board of Health, public health policy, HOME CDAC, affordable housing funding, Parks and Recreation Board, park planning, Library District Board, Air Quality Commission, air quality permits, county board actions, commission meetings"
+
+steps:
+  - name: classify
+    instructions: "workflows/boards-commissions/01-classify/instructions.md"
+    output_dir: "{RUN_DIR}/staged/"
+    timeout_min: 30
+    max_retries: 2
+  - name: enrich
+    instructions: "workflows/shared/02-enrich/instructions.md"
+    input_dir: "{RUN_DIR}/staged/"
+    output_dir: "{RUN_DIR}/enriched/"
+    timeout_min: 10
+    max_retries: 2
+  - name: summarize
+    instructions: "workflows/shared/03-summarize/instructions.md"
+    input_dir: "{RUN_DIR}/enriched/"
+    output_dir: "{RUN_DIR}/summarized/"
+    timeout_min: 30
+    max_retries: 2
+  - name: verify
+    instructions: "workflows/shared/04-verify/instructions.md"
+    input_dir: "{RUN_DIR}/summarized/"
+    output_dir: "{RUN_DIR}/verified/"
+    timeout_min: 15
+    max_retries: 2
+  - name: send
+    instructions: "workflows/shared/05-send/instructions.md"
+    input_dir: "{RUN_DIR}/verified/"
+    output_dir: "{RUN_DIR}/send-output/"
+    timeout_min: 5
+    max_retries: 1
+  - name: publish
+    instructions: "workflows/shared/06-publish/instructions.md"
+    input_dir: "{RUN_DIR}/verified/"
+    output_dir: "{RUN_DIR}/publish-output/"
+    timeout_min: 15
+    max_retries: 1

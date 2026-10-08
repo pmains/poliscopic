@@ -92,6 +92,10 @@ memory/
 !/docs/briefs/progress/README.md
 !/docs/briefs/progress/041.md
 !/docs/briefs/progress/042.md
+!/docs/newsletter/
+!/docs/newsletter/HOUSING-EDITORIAL-BRIEF.md
+!/docs/newsletter/NEWSLETTER-WORKFLOW.md
+!/docs/newsletter/PRODUCTION-CHECKLIST.md
 
 # Internal docs — not for public source control
 STYLE.md
@@ -145,8 +149,16 @@ entity-training-items.jsonl
 # ML model checkpoints (large binary artifacts)
 checkpoints/
 
-# Newsletter workflow definitions (internal orchestration)
-workflows/
+# Newsletter workflow source is operational code and must follow deployments.
+# Generated run state remains under ignored data/runs/, and Python caches are
+# covered by the repository-wide cache rules above.
+/workflows/**
+!/workflows/
+!/workflows/**/
+!/workflows/**/*.py
+!/workflows/**/*.yaml
+!/workflows/**/*.html
+!/workflows/**/*.md
 
 # Temp files
 tmp/

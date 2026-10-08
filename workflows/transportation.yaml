@@ -1,0 +1,44 @@
+# transportation.yaml — Transportation & Infrastructure newsletter
+name: transportation
+description: "Transportation & Infrastructure newsletter — roads, transit, MAG, bike/ped"
+display_name: "Transportation & Infrastructure Weekly Digest"
+max_run_minutes: 180
+max_retries: 2
+embedding_query: "Transportation and infrastructure policy issues: road projects, highway construction, road widening, road maintenance, transit, bus routes, light rail, Valley Metro, MAG transportation planning, bicycle infrastructure, pedestrian infrastructure, complete streets, traffic management, traffic signals, bridge maintenance, freeway projects, ADOT, airport operations, airport planning, transit-oriented development, transportation funding, transportation sales tax, street improvements"
+
+steps:
+  - name: classify
+    instructions: "workflows/transportation/01-classify/instructions.md"
+    output_dir: "{RUN_DIR}/staged/"
+    timeout_min: 30
+    max_retries: 2
+  - name: enrich
+    instructions: "workflows/shared/02-enrich/instructions.md"
+    input_dir: "{RUN_DIR}/staged/"
+    output_dir: "{RUN_DIR}/enriched/"
+    timeout_min: 10
+    max_retries: 2
+  - name: summarize
+    instructions: "workflows/shared/03-summarize/instructions.md"
+    input_dir: "{RUN_DIR}/enriched/"
+    output_dir: "{RUN_DIR}/summarized/"
+    timeout_min: 30
+    max_retries: 2
+  - name: verify
+    instructions: "workflows/shared/04-verify/instructions.md"
+    input_dir: "{RUN_DIR}/summarized/"
+    output_dir: "{RUN_DIR}/verified/"
+    timeout_min: 15
+    max_retries: 2
+  - name: send
+    instructions: "workflows/shared/05-send/instructions.md"
+    input_dir: "{RUN_DIR}/verified/"
+    output_dir: "{RUN_DIR}/send-output/"
+    timeout_min: 5
+    max_retries: 1
+  - name: publish
+    instructions: "workflows/shared/06-publish/instructions.md"
+    input_dir: "{RUN_DIR}/verified/"
+    output_dir: "{RUN_DIR}/publish-output/"
+    timeout_min: 15
+    max_retries: 1

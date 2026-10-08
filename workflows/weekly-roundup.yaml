@@ -1,0 +1,48 @@
+# weekly-roundup.yaml — Weekly Roundup newsletter (Saturday: week in review + look ahead)
+name: weekly-roundup
+description: "Weekly Roundup — week in review + look ahead, all topics"
+max_run_minutes: 180
+max_retries: 2
+embedding_query: >
+  Significant public policy decisions and notable agenda items across all
+  Maricopa County jurisdictions: major contracts and expenditures, land use
+  and zoning, transportation and infrastructure, water and environment,
+  housing and development, public safety, budgets, ordinances and
+  resolutions, council actions with broad public impact
+
+steps:
+  - name: classify
+    instructions: "workflows/weekly-roundup/01-classify/instructions.md"
+    output_dir: "{RUN_DIR}/staged/"
+    timeout_min: 30
+    max_retries: 2
+  - name: enrich
+    instructions: "workflows/shared/02-enrich/instructions.md"
+    input_dir: "{RUN_DIR}/staged/"
+    output_dir: "{RUN_DIR}/enriched/"
+    timeout_min: 10
+    max_retries: 2
+  - name: summarize
+    instructions: "workflows/weekly-roundup/03-summarize/instructions.md"
+    input_dir: "{RUN_DIR}/enriched/"
+    output_dir: "{RUN_DIR}/summarized/"
+    timeout_min: 30
+    max_retries: 2
+  - name: verify
+    instructions: "workflows/shared/04-verify/instructions.md"
+    input_dir: "{RUN_DIR}/summarized/"
+    output_dir: "{RUN_DIR}/verified/"
+    timeout_min: 15
+    max_retries: 2
+  - name: send
+    instructions: "workflows/shared/05-send/instructions.md"
+    input_dir: "{RUN_DIR}/verified/"
+    output_dir: "{RUN_DIR}/send-output/"
+    timeout_min: 5
+    max_retries: 1
+  - name: publish
+    instructions: "workflows/shared/06-publish/instructions.md"
+    input_dir: "{RUN_DIR}/verified/"
+    output_dir: "{RUN_DIR}/publish-output/"
+    timeout_min: 15
+    max_retries: 1
