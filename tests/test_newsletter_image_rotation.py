@@ -105,18 +105,13 @@ def test_city_pool_rotation_respects_exclusions():
     assert picked and picked != first
 
 
-def test_exhausting_the_city_pool_yields_a_qualified_peer_not_a_repeat():
-    """When every city image is used, a qualified TOPIC peer may be picked.
-
-    Jurisdiction and topic are PEERS (Pete 2026-09-26: "Neither Jurisdiction nor
-    Topic is paramount"), so exhausting one dimension must not dead-end the picker
-    and must not force a repeat — it falls back to another QUALIFIED candidate.
-    """
+def test_exhausting_city_pool_never_escapes_to_unrelated_art():
+    """A relevant repeat is safer than fresh art about the wrong subject/place."""
     every = list(CITY_POOLS["mesa"])
     picked = pick_featured_image("boards-commissions", "Mesa planning and zoning",
                                  run_date=W39, city="mesa", exclude=every)
     assert picked, "a pick must always be returned"
-    assert picked not in every, "a used image must not be repeated while peers exist"
+    assert picked in every
 
 
 def test_fresh_peer_beats_blocked_perfect_city_and_topic_match():
@@ -157,6 +152,66 @@ def test_uploaded_library_metadata_participates_in_selection():
         }],
     )
     assert picked == uploaded
+
+
+def test_unnamed_official_portrait_is_not_used_as_generic_topic_art():
+    """A police tag does not make an unrelated chief's portrait relevant."""
+    portrait = "/static/uploads/chief.jpg"
+    picked = pick_featured_image(
+        "public-safety",
+        "Apache Junction adopts automated license plate reader rules",
+        run_date=W39,
+        city="apache junction",
+        exclude=[path for path, _ in TOPIC_IMAGES["public-safety"]],
+        library=[{
+            "path": portrait,
+            "original_name": "colby-brandt.jpg",
+            "alt_text": "Colby Brandt, Glendale Police Chief, in formal portrait",
+            "tags": "glendale,police",
+        }],
+    )
+    assert picked != portrait
+
+
+def test_named_official_portrait_remains_eligible():
+    """The guard is contextual, not a blanket ban on portraits."""
+    portrait = "/static/uploads/chief.jpg"
+    picked = pick_featured_image(
+        "public-safety",
+        "Glendale Police Chief Colby Brandt presents the department plan",
+        run_date=W39,
+        city="glendale",
+        exclude=list(CITY_POOLS["glendale"])
+                + [path for path, _ in TOPIC_IMAGES["public-safety"]],
+        library=[{
+            "path": portrait,
+            "original_name": "colby-brandt.jpg",
+            "alt_text": "Colby Brandt, Glendale Police Chief, in formal portrait",
+            "tags": "glendale,police",
+        }],
+    )
+    assert picked == portrait
+
+
+def test_relevance_beats_cooldown_when_every_qualified_image_was_used():
+    """Never escape to unrelated fresh art just to avoid a relevant repeat."""
+    qualified = list(CITY_POOLS["maricopa county"])
+    qualified.extend(path for path, _ in TOPIC_IMAGES["housing"])
+    picked = pick_featured_image(
+        "boards-commissions",
+        "Maricopa County rezoning for a travel stop and truck parking",
+        run_date=W39,
+        city="maricopa county",
+        exclude=qualified,
+        library=[{
+            "path": "/static/uploads/e-cargo-bike.jpg",
+            "original_name": "e-cargo-bike.jpg",
+            "alt_text": "White electric cargo bike parked on a sidewalk",
+            "tags": "e-bike,transportation,bike",
+        }],
+    )
+    assert picked in qualified
+    assert picked != "/static/uploads/e-cargo-bike.jpg"
 
 
 def test_registry_city_display_name_reaches_city_pool():

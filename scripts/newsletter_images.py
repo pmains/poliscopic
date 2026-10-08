@@ -32,6 +32,7 @@ TOPIC_IMAGES: dict[str, list[tuple[str, list[str]]]] = {
             "/static/uploads/tempe-apartment-building.jpg",
             [
                 "apartment", "housing", "residential", "zoning", "rezon",
+                "rezone", "rezoned", "rezoning",
                 "affordable", "development", "home", "dwelling", "density",
                 "meritage", "adu", "multi-family", "multifamily", "rental",
                 "subdivision", "general plan", "lot split", "tenants",
@@ -161,6 +162,7 @@ TOPIC_IMAGES: dict[str, list[tuple[str, list[str]]]] = {
 CLASSIFY_KEYWORDS: dict[str, list[str]] = {
     "housing": [
         "housing", "apartment", "residential", "zoning", "rezon",
+        "rezone", "rezoned", "rezoning",
         "affordable", "development", "home", "dwelling", "density",
         "meritage", "adu", "multi-family", "multifamily", "rental",
         "subdivision", "general plan", "lot split", "tenants", "supply",
@@ -424,6 +426,52 @@ def _library_index(library=()) -> dict[str, str]:
     return result
 
 
+_PERSON_IMAGE_MARKERS = (
+    "portrait", " mayor ", " police chief", " fire chief", " councilmember",
+    " council member", " supervisor", " senator", " representative",
+    "speaking at a podium", "headshot",
+)
+
+
+def _library_record_index(library=()) -> dict[str, dict[str, str]]:
+    """Return structured uploaded-image metadata keyed by public path."""
+    result: dict[str, dict[str, str]] = {}
+    for entry in library or ():
+        if not isinstance(entry, dict):
+            continue
+        path = str(entry.get("path") or entry.get("url") or "")
+        if not path:
+            continue
+        result[path] = {
+            key: str(entry.get(key) or "").lower()
+            for key in ("filename", "original_name", "alt_text", "tags")
+        }
+    return result
+
+
+def _unnamed_person_image(record: dict[str, str], story_text: str) -> bool:
+    """Reject a person-led photo unless that person is named in the story.
+
+    Role/topic tags such as ``police`` or ``transportation`` describe what a
+    public official works on; they do not make the official's portrait an
+    honest illustration for every story in that beat.
+    """
+    blob = " ".join(record.values())
+    padded = f" {blob} "
+    if not any(marker in padded for marker in _PERSON_IMAGE_MARKERS):
+        return False
+
+    original = record.get("original_name", "").rsplit("/", 1)[-1]
+    stem = original.rsplit(".", 1)[0]
+    tokens = re.findall(r"[a-z]+", stem)
+    if len(tokens) < 2:
+        return True
+    # Uploaded portraits conventionally end in the subject's first and last
+    # name (e.g. colby-brandt or photographer_kate_gallego).
+    subject = " ".join(tokens[-2:])
+    return subject not in " ".join(_text_tokens(story_text))
+
+
 def _metadata_matches_topic(metadata: str, topic: str | None) -> bool:
     if not topic:
         return False
@@ -492,15 +540,22 @@ def _select_image(city: str | None, topic: str | None, week: int, text: str,
     # The token check exists only to recognise a CITY image that also suits the
     # topic. (Pete 2026-09-26)
     topic_paths = {p for p, _ in TOPIC_IMAGES.get(topic or "", ())}
+    city_paths = set(CITY_POOLS.get(city or "", ()))
     uploaded = _library_index(library)
+    uploaded_records = _library_record_index(library)
 
     # Tier = how many dimensions match: 2 = both, 1 = exactly one, 0 = neither.
     scored = []
     for path in pool:
         metadata = uploaded.get(path, "")
+        if _unnamed_person_image(uploaded_records.get(path, {}), text):
+            continue
         named_city = detect_city(_filename(path).replace("-", " "))
         conflicts_with_city = bool(city and named_city and named_city != city)
-        by_city = bool(city) and (city in _filename(path) or city in metadata)
+        by_city = bool(city) and (
+            path in city_paths or named_city == city
+            or city in _filename(path).replace("-", " ") or city in metadata
+        )
         by_topic = ((path in topic_paths) or _photo_matches_topic(path, topic)
                     or _metadata_matches_topic(metadata, topic))
         # A photo explicitly named for another jurisdiction is a last-resort
@@ -521,12 +576,6 @@ def _select_image(city: str | None, topic: str | None, week: int, text: str,
     ]
     if fresh_qualified:
         scored = fresh_qualified
-    elif city:
-        fresh = [(score, path) for score, path in scored if path not in blocked]
-        if fresh:
-            scored = fresh
-        elif qualified:
-            scored = qualified
     elif qualified:
         # Every semantically qualified image is cooling down. Reuse the best
         # qualified one instead of escaping to an unrelated generic photo.
