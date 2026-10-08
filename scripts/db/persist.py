@@ -485,19 +485,39 @@ def persist_meeting(
         )
     meeting_db_id_val = meeting_row
 
-    # Delete existing rows for this meeting within body scope
+    # Delete existing agenda rows for this meeting within body scope.
     session.execute(
         AgendaItem.__table__.delete().where(
             AgendaItem.body == body,
             AgendaItem.meeting_id == meeting_id,
         )
     )
-    session.execute(
-        SupportingDocument.__table__.delete().where(
-            SupportingDocument.body == body,
-            SupportingDocument.meeting_id == meeting_id,
+
+    # PostgreSQL processing receipts reference supporting-document identities.
+    # Re-scrapes must therefore update documents in place instead of deleting
+    # and recreating them.  Apart from preserving provenance, this avoids the
+    # FK's row-lock privilege requirement on the append-only receipt table.
+    # SQLite remains replacement-based for isolated tests and archives.
+    preserve_document_ids = session.get_bind().dialect.name == "postgresql"
+    existing_docs_by_url: dict[str, SupportingDocument] = {}
+    if preserve_document_ids:
+        existing_docs_by_url = {
+            doc.document_url: doc
+            for doc in session.execute(
+                select(SupportingDocument).where(
+                    SupportingDocument.body == body,
+                    SupportingDocument.meeting_id == meeting_id,
+                )
+            ).scalars()
+            if doc.document_url
+        }
+    else:
+        session.execute(
+            SupportingDocument.__table__.delete().where(
+                SupportingDocument.body == body,
+                SupportingDocument.meeting_id == meeting_id,
+            )
         )
-    )
 
     seen_item_ids: set[str] = set()
     for sort_idx, item_dict in enumerate(agenda_item_dicts):
@@ -539,6 +559,26 @@ def persist_meeting(
 
     if supporting_doc_dicts:
         for doc_dict in supporting_doc_dicts:
+            document_url = doc_dict.get("document_url", "")
+            existing_meeting_doc = existing_docs_by_url.get(document_url)
+            if existing_meeting_doc is not None:
+                existing_meeting_doc.agenda_item_id = str(doc_dict.get("agenda_item_id", "0"))
+                existing_meeting_doc.agenda_item_number = str(
+                    doc_dict.get("agenda_item_number", "0") or "0"
+                )
+                existing_meeting_doc.c_number = doc_dict.get("c_number")
+                existing_meeting_doc.c_number_base = doc_dict.get("c_number_base")
+                existing_meeting_doc.c_number_revision = doc_dict.get("c_number_revision")
+                existing_meeting_doc.document_title = doc_dict.get("document_title", "")
+                existing_meeting_doc.document_type = doc_dict.get("document_type")
+                existing_meeting_doc.file_name = doc_dict.get("file_name")
+                existing_meeting_doc.file_extension = (
+                    doc_dict.get("file_extension") or _infer_extension(document_url)
+                )
+                existing_meeting_doc.scraped_at = datetime.now(timezone.utc)
+                inserted_doc_count += 1
+                continue
+
             # Check if this document already exists across any meeting.
             # The unique constraint (agenda_item_id, document_url) doesn't
             # include meeting_id, so we may conflict with docs from other
@@ -546,7 +586,7 @@ def persist_meeting(
             existing = session.execute(
                 select(SupportingDocument.id).where(
                     SupportingDocument.agenda_item_id == str(doc_dict.get("agenda_item_id", "0")),
-                    SupportingDocument.document_url == doc_dict.get("document_url", ""),
+                    SupportingDocument.document_url == document_url,
                 )
             ).scalar_one_or_none()
             if existing:
@@ -566,7 +606,7 @@ def persist_meeting(
                 c_number_base=doc_dict.get("c_number_base"),
                 c_number_revision=doc_dict.get("c_number_revision"),
                 document_title=doc_dict.get("document_title", ""),
-                document_url=doc_dict.get("document_url", ""),
+                document_url=document_url,
                 document_type=doc_dict.get("document_type"),
                 file_name=doc_dict.get("file_name"),
                 file_extension=(

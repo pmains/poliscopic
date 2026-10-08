@@ -122,6 +122,35 @@ TOPIC_IMAGES: dict[str, list[tuple[str, list[str]]]] = {
             "/static/uploads/scottsdale-water-faucet.jpg",
             ["faucet", "conservation", "rebate", "usage", "drought", "tap", "gallons"],
         ),
+        # Rotation-only entry: keywords describe the photograph itself, never
+        # agenda prose, so this never wins a keyword pin and cannot displace
+        # the river image on river stories. It joins the generic-text rotation.
+        (
+            "/static/uploads/virginia-lake-green-trees-grass-blue-sky.jpg",
+            ["virginia lake", "green trees", "blue sky"],
+        ),
+        # Further rotation entries, same rule: descriptive keywords only, so
+        # none of them can displace a keyword-pinned image.
+        (
+            "/static/uploads/knoll-lake-canoe-pine-trees.jpg",
+            ["knoll lake", "canoe", "pine trees"],
+        ),
+        (
+            "/static/uploads/papago-park-pond.jpg",
+            ["papago park", "park pond"],
+        ),
+        (
+            "/static/uploads/lockett-meadow-inner-basin-lake.jpg",
+            ["lockett meadow", "inner basin"],
+        ),
+        (
+            "/static/uploads/crescent-moon-ranch-river.jpg",
+            ["crescent moon ranch", "oak creek"],
+        ),
+        (
+            "/static/uploads/lake-powell-wolfgang-staudt.jpg",
+            ["lake powell", "glen canyon"],
+        ),
     ],
 }
 
@@ -180,14 +209,32 @@ CARD_FALLBACK_POOLS: dict[str, list[str]] = {
     "water": [
         "/static/uploads/colorado-river-flickr.jpg",
         "/static/uploads/scottsdale-water-faucet.jpg",
+        "/static/uploads/virginia-lake-green-trees-grass-blue-sky.jpg",
+        "/static/uploads/knoll-lake-canoe-pine-trees.jpg",
+        "/static/uploads/papago-park-pond.jpg",
+        "/static/uploads/lockett-meadow-inner-basin-lake.jpg",
+        "/static/uploads/crescent-moon-ranch-river.jpg",
+        "/static/uploads/lake-powell-wolfgang-staudt.jpg",
     ],
     "environment": [
         "/static/uploads/colorado-river-flickr.jpg",
         "/static/uploads/scottsdale-water-faucet.jpg",
+        "/static/uploads/virginia-lake-green-trees-grass-blue-sky.jpg",
+        "/static/uploads/knoll-lake-canoe-pine-trees.jpg",
+        "/static/uploads/papago-park-pond.jpg",
+        "/static/uploads/lockett-meadow-inner-basin-lake.jpg",
+        "/static/uploads/crescent-moon-ranch-river.jpg",
+        "/static/uploads/lake-powell-wolfgang-staudt.jpg",
     ],
     "infrastructure": [
         "/static/uploads/colorado-river-flickr.jpg",
         "/static/uploads/scottsdale-water-faucet.jpg",
+        "/static/uploads/virginia-lake-green-trees-grass-blue-sky.jpg",
+        "/static/uploads/knoll-lake-canoe-pine-trees.jpg",
+        "/static/uploads/papago-park-pond.jpg",
+        "/static/uploads/lockett-meadow-inner-basin-lake.jpg",
+        "/static/uploads/crescent-moon-ranch-river.jpg",
+        "/static/uploads/lake-powell-wolfgang-staudt.jpg",
     ],
     "public safety": [
         "/static/uploads/phoenix-police-suv.jpg",
@@ -293,6 +340,16 @@ _CITY_NAMES = (
 )
 
 
+def normalize_city(value: str | None) -> str:
+    """Normalize registry display names to the keys used by ``CITY_POOLS``."""
+    city = (value or "").lower().strip()
+    for prefix in ("city of ", "town of "):
+        if city.startswith(prefix):
+            city = city[len(prefix):].strip()
+            break
+    return city
+
+
 def detect_city(*texts) -> str | None:
     """Return the city named in the given text(s), if any.
 
@@ -308,30 +365,196 @@ def detect_city(*texts) -> str | None:
     return best
 
 
-def _city_pick(city: str, topic: str, week: int, text: str = "") -> str:
-    """Pick a photo from the city's pool.
+#: Photo-SUBJECT tokens, so a FILENAME can be classified by topic.
+#: Pete 2026-09-26: "I try to include both the jurisdiction and topic keywords in the
+#: image titles for this reason" — the filename is the classification key, so a story
+#: can be matched by jurisdiction, by topic, or ideally by BOTH.
+FILENAME_TOPIC_TOKENS: dict[str, tuple[str, ...]] = {
+    "water-environment": ("water", "faucet", "river", "canal", "reservoir", "pond",
+                          "wastewater", "aquifer", "flood", "well"),
+    "transportation": ("rail", "transit", "bike", "intersection", "street", "road",
+                       "station", "platform", "bridge", "light-rail"),
+    "public-safety": ("fire", "police", "safety", "sheriff"),
+    "housing": ("apartment", "townhome", "townhome", "housing", "row-house",
+                "row-houses", "multifamily", "casita", "condo"),
+    "boards-commissions": ("city-hall", "council", "board", "commission", "supervisors"),
+}
 
-    City first, but never topically wrong (Pete 2026-09-16):
-    1. City photos that are already candidates for this topic win, and
-       keyword pinning still applies (a Tempe row-house story keeps the
-       row-house photo).
-    2. Otherwise the city's generic civic photos (city hall, skyline,
-       murals), excluding any photo tagged with a different topic.
+#: Neutral CIVIC markers. For a jurisdiction-level story with no topic-specific photo,
+#: the city's civic building is the honest default rather than an unrelated landmark.
+CIVIC_TOKENS = ("city-hall", "city_hall", "council", "board", "commission",
+                "supervisors", "office-building", "city-center")
+
+
+def _filename(path: str) -> str:
+    return (path or "").rsplit("/", 1)[-1].lower()
+
+
+def _photo_matches_topic(path: str, topic: str | None) -> bool:
+    """Whether this PHOTO's filename carries a subject token for `topic`."""
+    if not topic:
+        return False
+    name = _filename(path)
+    return any(token in name for token in FILENAME_TOPIC_TOKENS.get(topic, ()))
+
+
+def _is_civic_photo(path: str) -> bool:
+    """Whether this photo is a neutral civic/government image for its city."""
+    name = _filename(path)
+    return any(token in name for token in CIVIC_TOKENS)
+
+
+def _library_index(library=()) -> dict[str, str]:
+    """Normalize uploaded-library entries into path -> searchable metadata."""
+    result: dict[str, str] = {}
+    for entry in library or ():
+        if isinstance(entry, dict):
+            path = entry.get("path") or entry.get("url") or ""
+            metadata = entry.get("metadata") or " ".join(
+                str(entry.get(key) or "")
+                for key in ("filename", "original_name", "alt_text", "tags")
+            )
+        else:
+            try:
+                path, metadata = entry
+            except (TypeError, ValueError):
+                continue
+        if path:
+            result[str(path)] = str(metadata or "").lower()
+    return result
+
+
+def _metadata_matches_topic(metadata: str, topic: str | None) -> bool:
+    if not topic:
+        return False
+    return _score(metadata, CLASSIFY_KEYWORDS.get(topic, [])) > 0
+
+
+def _qualified_images(city: str | None, topic: str | None, library=()) -> list[str]:
+    """Every image qualified for this story, in a MEANINGFUL order.
+
+    City pool first, then the topic pool, then the generic fallbacks — deduped with
+    declaration order preserved. Order matters: a pool's declaration order encodes
+    preference (the preferred water image is deliberately first) and the weekly
+    rotation indexes into it, so re-sorting would silently change the rotation.
+
+    Neither dimension owns the selection (Pete 2026-09-26: "Neither Jurisdiction nor
+    Topic is paramount"), so both contribute candidates and the RANKING decides.
     """
-    pool = CITY_POOLS.get(city) or []
+    ordered: list[str] = []
+    seen: set[str] = set()
+    sources: list[list[str]] = []
+    if city:
+        sources.append(list(CITY_POOLS.get(city) or ()))
+    sources.append([path for path, _ in TOPIC_IMAGES.get(topic or "", ())])
+    uploaded = _library_index(library)
+    sources.append([
+        path for path, metadata in uploaded.items()
+        if (city and city in metadata) or _metadata_matches_topic(metadata, topic)
+    ])
+    sources.append(list(GENERIC_CARD_IMAGES))
+    for source in sources:
+        for path in source:
+            if path not in seen:
+                seen.add(path)
+                ordered.append(path)
+    return ordered
+
+
+def _text_score(path: str, topic: str | None, text: str) -> int:
+    """Story-text score for a path, using its topic-pool keyword list (0 if none)."""
+    for candidate, keywords in TOPIC_IMAGES.get(topic or "", ()):
+        if candidate == path:
+            return _score(text, keywords)
+    return 0
+
+
+def _select_image(city: str | None, topic: str | None, week: int, text: str,
+                  exclude=(), library=()) -> str:
+    """Rank qualified images by MATCH QUALITY, then apply diversity.
+
+    Pete 2026-09-27:
+      * jurisdiction OR topic is good; jurisdiction AND topic is better;
+      * neither dimension is paramount — a both-match beats a one-match, and the
+        two one-matches are PEERS (no jurisdiction-first or topic-first order);
+      * diversity matters — never reuse an image while another qualified
+        candidate is still unused.
+    """
+    pool = _qualified_images(city, topic, library)
     if not pool:
         return ""
-    if topic and topic in TOPIC_IMAGES:
-        topical = [(p, kws) for p, kws in TOPIC_IMAGES[topic] if p in pool]
-        if topical:
-            return _pick_from_pool(text, topical, week)
-    candidates = [
-        p for p in pool
-        if not CITY_PHOTO_TOPICS.get(p) or (topic and topic in CITY_PHOTO_TOPICS[p])
+    blocked = {p for p in (exclude or ()) if p}
+
+    # Membership in the topic's own pool is ALREADY a topic qualification, so
+    # ranking must not narrow the pool to filename tokens — doing so would drop
+    # perfectly good candidates (e.g. lake photos whose names carry no token) and
+    # shrink the rotation, which is the opposite of the diversity requirement.
+    # The token check exists only to recognise a CITY image that also suits the
+    # topic. (Pete 2026-09-26)
+    topic_paths = {p for p, _ in TOPIC_IMAGES.get(topic or "", ())}
+    uploaded = _library_index(library)
+
+    # Tier = how many dimensions match: 2 = both, 1 = exactly one, 0 = neither.
+    scored = []
+    for path in pool:
+        metadata = uploaded.get(path, "")
+        named_city = detect_city(_filename(path).replace("-", " "))
+        conflicts_with_city = bool(city and named_city and named_city != city)
+        by_city = bool(city) and (city in _filename(path) or city in metadata)
+        by_topic = ((path in topic_paths) or _photo_matches_topic(path, topic)
+                    or _metadata_matches_topic(metadata, topic))
+        # A photo explicitly named for another jurisdiction is a last-resort
+        # diversity fallback, never a peer of a correct-city candidate.
+        if conflicts_with_city:
+            by_topic = False
+        scored.append((int(by_city) + int(by_topic), path))
+
+    # Freshness is a HARD constraint across the entire qualified pool, not a
+    # tie-breaker inside the highest semantic tier. The old ordering first kept
+    # only city+topic matches and then applied exclusions, so one "perfect"
+    # image could repeat while many unused city-only or topic-only peers sat
+    # available. That produced the visibly unprofessional tight loop this
+    # selector is specifically meant to prevent.
+    qualified = [(score, path) for score, path in scored if score > 0]
+    fresh_qualified = [
+        (score, path) for score, path in qualified if path not in blocked
     ]
-    if not candidates:
-        candidates = [p for p in pool if not CITY_PHOTO_TOPICS.get(p)] or pool
-    return _rotate(candidates, week)
+    if fresh_qualified:
+        scored = fresh_qualified
+    elif city:
+        fresh = [(score, path) for score, path in scored if path not in blocked]
+        if fresh:
+            scored = fresh
+        elif qualified:
+            scored = qualified
+    elif qualified:
+        # Every semantically qualified image is cooling down. Reuse the best
+        # qualified one instead of escaping to an unrelated generic photo.
+        scored = qualified
+    else:
+        fresh = [(score, path) for score, path in scored if path not in blocked]
+        if fresh:
+            scored = fresh
+    best_tier = max(tier for tier, _ in scored)
+    tier = [path for tier, path in scored if tier == best_tier]
+
+    # Within the best tier, in order of priority:
+    #   1. story-text precision (keeps "row house" text on the row-house photo);
+    #   2. a neutral civic photo, which is what a jurisdiction story looks like.
+    # Diversity was already enforced globally above.
+    groups: dict[tuple, list[str]] = {}
+    for path in tier:
+        key = (-_text_score(path, topic, text),
+               not _is_civic_photo(path))
+        groups.setdefault(key, []).append(path)
+    order = {path: index for index, path in enumerate(pool)}
+    chosen = sorted(groups[min(groups)], key=lambda p: order.get(p, 1 << 30))
+    return _rotate(chosen, week)
+
+
+def _city_pick(city: str, topic: str, week: int, text: str = "", exclude=()) -> str:
+    """Pick a photo from the city's pool — delegates to the shared ranker."""
+    return _select_image(city, topic, week, text, exclude)
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
@@ -364,25 +587,50 @@ def _week_number(when=None) -> int:
     return when.isocalendar().week
 
 
-def _rotate(paths: list[str], week: int) -> str:
-    """Deterministic per-week rotation through redundant images."""
+def _rotate(paths: list[str], week: int, exclude=()) -> str:
+    """Deterministic per-week rotation through redundant images.
+
+    ``exclude`` holds images ALREADY SHOWN on recent articles. Rotation is keyed on
+    the ISO week alone, so two articles in the same week drawing on the same pool
+    resolved to the identical image — which is how the 2026-09-26 weekly roundup
+    ended up repeating the 2026-09-24 water article's photo. A repeat fails to
+    signal that these are separate stories (Pete 2026-09-26), so images already in
+    use are dropped BEFORE the rotation index is applied.
+
+    Never returns "" merely because everything was excluded: when the filtered pool
+    is empty the unfiltered pool is used as a last resort, so a small pool can never
+    dead-end the caller.
+    """
     if not paths:
         return ""
-    return paths[(week - 1) % len(paths)]
+    blocked = {p for p in (exclude or ()) if p}
+    fresh = [p for p in paths if p not in blocked]
+    pool = fresh or list(paths)
+    return pool[(week - 1) % len(pool)]
 
 
-def _pick_from_pool(text: str, pool: list[tuple[str, list[str]]], week: int) -> str:
+def _pick_from_pool(text: str, pool: list[tuple[str, list[str]]], week: int,
+                    exclude=()) -> str:
     """Pick an image from a topic pool.
 
     - A single highest-scoring candidate is PINNED (fire story → fire truck,
       river story → river photo) in every week.
     - A tie among candidates rotates by week through the tied images.
     - No keyword match (generic story) rotates through the whole pool.
+    - Images already used by recent articles are removed from consideration FIRST,
+      so a pinned photo yields to rotation rather than repeating on a
+      neighbouring article. With no exclusions the behaviour is unchanged.
     """
-    scored = [(_score(text, kws), path) for path, kws in pool]
+    blocked = {p for p in (exclude or ()) if p}
+    candidates = [(p, kws) for p, kws in pool if p not in blocked]
+    if not candidates:
+        candidates = list(pool)
+    if not candidates:
+        return ""
+    scored = [(_score(text, kws), path) for path, kws in candidates]
     best = max(s for s, _ in scored)
     if best <= 0:
-        return _rotate([p for p, _ in pool], week)
+        return _rotate([p for p, _ in candidates], week)
     winners = [path for s, path in scored if s == best]
     return _rotate(winners, week)
 
@@ -402,7 +650,7 @@ def classify_top_story(text: str) -> str | None:
 
 
 def pick_featured_image(topic: str, top_story_text: str, run_date=None,
-                        city: str | None = None) -> str:
+                        city: str | None = None, exclude=(), library=()) -> str:
     """Return the featured_image path for a newsletter article.
 
     topic: workflow key (housing, water-environment, public-safety,
@@ -412,26 +660,32 @@ def pick_featured_image(topic: str, top_story_text: str, run_date=None,
         defaults to today (UTC).
     city: jurisdiction of the top story (Pete 2026-09-16: match the city
         where possible).  When omitted it is detected from top_story_text.
+    exclude: images already shown on recent articles.  Rotation is keyed on the
+        ISO week alone, so without this a roundup summarising a story can repeat
+        that story's own photo (Pete 2026-09-26: rotate so a repeat cannot make
+        separate articles look like the same story).
+    library: uploaded image records as mappings or ``(path, metadata)`` pairs.
+        Matching uses their original names, alt text, and tags, so the selector
+        is not limited to a hard-coded pool.
     Returns "" when no topic matches and no sensible default exists.
     """
     week = _week_number(run_date)
 
     # City first (Pete directive 2026-09-16).
-    city = (city or detect_city(top_story_text) or "").lower().strip()
-    if city:
-        img = _city_pick(city, topic, week, top_story_text)
-        if img:
-            return img
+    city = normalize_city(city or detect_city(top_story_text))
 
-    if topic in TOPIC_IMAGES:
-        return _pick_from_pool(top_story_text, TOPIC_IMAGES[topic], week)
-    cat = classify_top_story(top_story_text)
-    if not cat:
+    # A roundup/boards topic has no pool of its own: classify the TOP STORY, and
+    # keep the historic property that an unrelated story yields no image at all.
+    effective = topic if topic in TOPIC_IMAGES else (
+        classify_top_story(top_story_text) or "")
+    if not effective and not city:
         return ""
-    return _pick_from_pool(top_story_text, TOPIC_IMAGES[cat], week)
+    return _select_image(city or None, effective or None, week, top_story_text,
+                         exclude, library)
 
 
-def card_fallback_image(tags_or_names, published_at=None, city: str | None = None) -> str:
+def card_fallback_image(tags_or_names, published_at=None, city: str | None = None,
+                        exclude=()) -> str:
     """Pick a front-page card image for an article without featured_image.
 
     Accepts Tag objects or tag-name strings, plus the article's published_at
@@ -451,7 +705,7 @@ def card_fallback_image(tags_or_names, published_at=None, city: str | None = Non
         if len(city_tags) == 1:
             city = next(iter(city_tags))
     if city:
-        img = _city_pick(city, "", week, " ".join(names))
+        img = _city_pick(city, "", week, " ".join(names), exclude)
         if img:
             return img
 
@@ -461,5 +715,5 @@ def card_fallback_image(tags_or_names, published_at=None, city: str | None = Non
             continue
         for key, paths in CARD_FALLBACK_POOLS.items():
             if key in name:
-                return _rotate(paths, week)
-    return _rotate(GENERIC_CARD_IMAGES, week)
+                return _rotate(paths, week, exclude)
+    return _rotate(GENERIC_CARD_IMAGES, week, exclude)

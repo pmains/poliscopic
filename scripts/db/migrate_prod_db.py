@@ -241,7 +241,8 @@ def print_status(engine):
 
 
 def main():
-    require_production_interlock("OP-SCHEMA", "scripts/db/migrate_prod_db.py")
+    require_production_interlock("OP-SCHEMA", "scripts/db/migrate_prod_db.py",
+                                 mode="schema")
     prod_url = _resolve_prod_url()
     engine = create_engine(prod_url, pool_size=2, connect_args={"connect_timeout": 10})
 

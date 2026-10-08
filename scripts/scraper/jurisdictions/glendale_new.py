@@ -73,7 +73,8 @@ BODY_MAP: dict[str, tuple[str, str]] = {
     "council compensation": ("glendale-council-compensation", "glendale-ccc"),
     "business council": ("glendale-business-council", "glendale-bcc"),
     "municipal property corporation": ("glendale-municipal-property", "glendale-mpc"),
-    "public notices": ("glendale-public-notices", "glendale-pub"),
+    # Public notices are council postings, not a separate governing body.
+    "public notices": ("glendale-city-council", "glendale-cc"),
     "code review": ("glendale-code-review", "glendale-ccr"),
     "abatement hearing": ("glendale-abatement-hearing", "glendale-ah"),
     "judicial selection": ("glendale-judicial-selection", "glendale-jsab"),

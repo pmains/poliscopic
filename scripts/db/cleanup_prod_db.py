@@ -148,6 +148,7 @@ def main():
     require_production_interlock(
         "OP-STATUS" if args.status else "OP-SCHEMA",
         "scripts/db/cleanup_prod_db.py",
+        mode=None if args.status else "cleanup",
     )
 
     prod_url = _resolve_prod_url()

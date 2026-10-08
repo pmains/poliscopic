@@ -70,7 +70,7 @@ def _pk_cols(engine, table):
     return [r[0] for r in rows]
 
 
-def upsert_table(dev, prod, table):
+def upsert_table(dev, prod, table, *, row_transform=None):
     dev_cols = set(_columns(dev, table))
     prod_cols = set(_columns(prod, table))
     cols = sorted(dev_cols & prod_cols - AUTO_EXCLUDE.get(table, set()))
@@ -96,6 +96,8 @@ def upsert_table(dev, prod, table):
     total = 0
     with dev.connect() as dc:
         rows = dc.execute(text(f'SELECT {insert_cols} FROM public."{table}"')).mappings().all()
+    if row_transform is not None:
+        rows = row_transform(rows)
     with prod.begin() as pc:
         for i in range(0, len(rows), 500):
             chunk = rows[i:i + 500]
@@ -106,8 +108,55 @@ def upsert_table(dev, prod, table):
     return total
 
 
+def upsert_tags(dev, prod):
+    """Upsert tags by their cross-database identity (slug), not local integer ID.
+
+    Development and production sequences can legitimately allocate different IDs.
+    We therefore preserve the production ID for an existing slug and return a map
+    used to rewrite ``article_tags.tag_id`` later in the same sync.  This also
+    safely folds historical duplicate development rows that share a slug.
+    """
+    cols = [c for c in _columns(dev, "tags") if c in set(_columns(prod, "tags"))]
+    payload_cols = [c for c in cols if c != "id"]
+    insert_cols = ", ".join(f'"{c}"' for c in payload_cols)
+    placeholders = ", ".join(f":{c}" for c in payload_cols)
+    update_cols = [c for c in payload_cols if c != "slug"]
+    update_set = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in update_cols)
+    sql = (f'INSERT INTO public."tags" ({insert_cols}) VALUES ({placeholders}) '
+           f'ON CONFLICT ("slug") DO UPDATE SET {update_set} RETURNING "id"')
+
+    with dev.connect() as dc:
+        rows = dc.execute(text(
+            'SELECT "id", ' + insert_cols + ' FROM public."tags" ORDER BY "id"'
+        )).mappings().all()
+
+    tag_id_map = {}
+    with prod.begin() as pc:
+        for row in rows:
+            prod_id = pc.execute(text(sql), {
+                c: row[c] for c in payload_cols
+            }).scalar_one()
+            tag_id_map[row["id"]] = prod_id
+    log.info("    tags: %d dev rows mapped to %d production slugs",
+             len(rows), len(set(tag_id_map.values())))
+    return len(rows), tag_id_map
+
+
+def remap_article_tags(rows, tag_id_map):
+    """Translate local tag IDs and collapse duplicate associations."""
+    remapped = {
+        (row["article_id"], tag_id_map[row["tag_id"]])
+        for row in rows
+    }
+    return [
+        {"article_id": article_id, "tag_id": tag_id}
+        for article_id, tag_id in sorted(remapped)
+    ]
+
+
 def main():
-    require_production_interlock("OP-RECON", "scripts/editorial_sync.py")
+    require_production_interlock("OP-RECON", "scripts/editorial_sync.py",
+                                 scope=EDITORIAL_TABLES, mode="upsert")
     dev_url = os.environ.get("DATABASE_URL", "")
     prod_url = os.environ.get("PROD_DATABASE_URL", "")
     if not dev_url or not prod_url:
@@ -127,9 +176,18 @@ def main():
     prod = create_engine(prod_url, pool_size=2, connect_args={"connect_timeout": 10})
 
     t0 = time.time()
+    tag_id_map = {}
     for table in EDITORIAL_TABLES:
         log.info("Syncing %s", table)
-        n = upsert_table(dev, prod, table)
+        if table == "tags":
+            n, tag_id_map = upsert_tags(dev, prod)
+        elif table == "article_tags":
+            n = upsert_table(
+                dev, prod, table,
+                row_transform=lambda rows: remap_article_tags(rows, tag_id_map),
+            )
+        else:
+            n = upsert_table(dev, prod, table)
         log.info("  %s: %d rows upserted", table, n)
 
     dev.dispose()

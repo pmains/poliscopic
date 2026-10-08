@@ -29,9 +29,16 @@ from sqlalchemy import select  # noqa: E402
 from db.core import get_engine  # noqa: E402
 from db.models import Base  # noqa: E402
 from db.names import body_jurisdictions, body_names, humanize_code  # noqa: E402
-from db.newsroom import Article, ArticleSource, Tag  # noqa: E402
+from db.newsroom import Article, ArticleSource, MediaImage, Tag  # noqa: E402
 
 from newsletter_images import pick_featured_image  # noqa: E402
+
+#: How many recent article image assignments form the hard reuse cooldown.
+#: Six articles was only one publishing cycle and allowed conspicuous repeats
+#: every week. Forty covers several cycles while still allowing a genuinely
+#: small, highly specific pool to recover after all qualified alternatives have
+#: been used.
+RECENT_IMAGE_WINDOW = 40
 
 ROOT = Path(__file__).resolve().parent.parent
 RUNS_DIR = ROOT / "data" / "runs"
@@ -277,8 +284,6 @@ def main():
             top_city = body_jurisdictions([body_id]).get(body_id, "")
             if top_city:
                 break
-    featured_image = pick_featured_image(args.topic, top_text, run_date=run_date,
-                                        city=top_city or None)
     slug = f"{run_date}-{slug_stem}"
 
     engine = get_engine()
@@ -292,17 +297,47 @@ def main():
         session.close()
         return 0
 
+    # Rotation (Pete 2026-09-26): reusing a photo that a recent article already
+    # shows fails to cue readers that these are separate stories. Pick the image
+    # only AFTER knowing what the last RECENT_IMAGE_WINDOW articles already use.
+    recent_images = [row[0] for row in session.execute(
+        select(Article.featured_image)
+        .where(Article.featured_image.is_not(None))
+        .where(Article.featured_image != "")
+        .order_by(Article.published_at.desc().nullslast())
+        .limit(RECENT_IMAGE_WINDOW))]
+    image_library = [
+        {
+            "path": image.url,
+            "filename": image.filename,
+            "original_name": image.original_name,
+            "alt_text": image.alt_text,
+            "tags": image.tags,
+        }
+        for image in session.execute(select(MediaImage)).scalars()
+    ]
+    featured_image = pick_featured_image(args.topic, top_text, run_date=run_date,
+                                        city=top_city or None,
+                                        exclude=recent_images,
+                                        library=image_library)
+
     tag_cache = {}
 
     def get_tag(name):
-        if name in tag_cache:
-            return tag_cache[name]
-        tag = session.execute(select(Tag).where(Tag.name == name)).scalar_one_or_none()
+        slug = slugify(name)
+        if slug in tag_cache:
+            return tag_cache[slug]
+        # Slug is the stable tag identity.  Name-only lookup created a second
+        # ``city-of-goodyear`` row when capitalization changed, which production
+        # correctly rejected during the editorial sync.
+        tag = session.execute(
+            select(Tag).where(Tag.slug == slug).order_by(Tag.id)
+        ).scalars().first()
         if tag is None:
-            tag = Tag(name=name, slug=slugify(name), description="")
+            tag = Tag(name=name, slug=slug, description="")
             session.add(tag)
             session.flush()
-        tag_cache[name] = tag
+        tag_cache[slug] = tag
         return tag
 
     body = build_body(overview, items)

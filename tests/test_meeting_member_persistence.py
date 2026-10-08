@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from scripts.scraper.backfill_votes import _persist_minutes_votes
 from scripts.db.meeting_members import AttendanceRecord, reconcile_meeting_members
-from scripts.db.models import AgendaItemVote, MemberVote, MeetingMember, Person
+from scripts.db.models import AgendaItem, AgendaItemVote, MemberVote, MeetingMember, Person
 
 
 def _isolated_session() -> Session:
@@ -122,3 +122,32 @@ def test_minutes_vote_refresh_reconciles_member_provenance():
     assert rows[alice_member_id].role == "Member"
     assert rows[alice_member_id].present is False
     assert rows[bob_member_id].id == original_ids[bob_member_id]
+
+
+def test_minutes_vote_persists_body_on_member_votes():
+    """A minutes backfill must preserve the public-body reference on each vote."""
+    session = _isolated_session()
+    Person.__table__.create(session.bind)
+    AgendaItem.__table__.create(session.bind)
+    AgendaItemVote.__table__.create(session.bind)
+    MemberVote.__table__.create(session.bind)
+
+    supervisors = [{
+        "name": "Alice Chair",
+        "normalized_name": "alice chair",
+        "role": "Chair",
+        "present": True,
+    }]
+    votes = [{
+        "agenda_item_number": "1",
+        "supervisor_votes": [{
+            "name": "Alice Chair",
+            "normalized_name": "alice chair",
+            "vote": "yes",
+        }],
+    }]
+
+    _persist_minutes_votes(session, "glendale-gsc", "6060", 10, supervisors, votes)
+    row = session.execute(select(MemberVote)).scalar_one()
+
+    assert row.body == "glendale-gsc"

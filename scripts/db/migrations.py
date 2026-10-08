@@ -15,6 +15,7 @@ from db.models import (Base, Meeting, AgendaItem, SupportingDocument,
     BodyMembership, Person, BodySeat, PublicBody, Jurisdiction,
     IngestFailure)
 from db.core import get_engine, get_session
+from poliscopic.db.helper import _parse_date
 
 def init_db() -> None:
     """Create all tables if they don't exist, or migrate existing ones."""
@@ -1361,6 +1362,105 @@ def seed_default_jurisdictions() -> None:
             if existing is None:
                 session.add(pb)
 
+        # ── City of Litchfield Park ──
+        litchfield = session.execute(
+            select(Jurisdiction).where(Jurisdiction.slug == "litchfield-park")
+        ).scalar_one_or_none()
+        if litchfield is None:
+            litchfield = Jurisdiction(
+                name="City of Litchfield Park", slug="litchfield-park", state="AZ"
+            )
+            session.add(litchfield)
+            session.flush()
+
+        litchfield_bodies = [
+            ("Litchfield Park City Council", "city-council", "litchfield-park-cc", "Council"),
+            ("Litchfield Park Planning and Zoning Commission", "planning-zoning-commission", "litchfield-park-pz", "Commission"),
+            ("Litchfield Park Board of Adjustment", "board-of-adjustment", "litchfield-park-boa", "Board"),
+            ("Litchfield Park Design Review Board", "design-review-board", "litchfield-park-drb", "Board"),
+            ("Litchfield Park Community Facilities District", "community-facilities-district", "litchfield-park-cfd", "District"),
+            ("Litchfield Park Recreation and Public Grounds Commission", "recreation-public-grounds-commission", "litchfield-park-rpgc", "Commission"),
+            ("Litchfield Park General Meetings", "general-meetings", "litchfield-park-general", "Other"),
+        ]
+        for name, slug, body_code, body_type in litchfield_bodies:
+            existing = session.execute(
+                select(PublicBody).where(PublicBody.body_code == body_code)
+            ).scalar_one_or_none()
+            if existing is None:
+                session.add(PublicBody(
+                    jurisdiction_id=litchfield.id,
+                    name=name,
+                    slug=slug,
+                    body_code=body_code,
+                    body_type=body_type,
+                    website_url="https://litchfieldparkaz.portal.civicclerk.com/",
+                ))
+
+        # ── Town of Youngtown ──
+        youngtown = session.execute(
+            select(Jurisdiction).where(Jurisdiction.slug == "youngtown")
+        ).scalar_one_or_none()
+        if youngtown is None:
+            youngtown = Jurisdiction(name="Town of Youngtown", slug="youngtown", state="AZ")
+            session.add(youngtown)
+            session.flush()
+        youngtown_bodies = [
+            ("Youngtown Town Council", "town-council", "youngtown-cc", "Council"),
+            ("Youngtown Agua Fria Ranch Community Facilities District", "agua-fria-ranch-cfd", "youngtown-afr-cfd", "District"),
+            ("Youngtown Board of Adjustment", "board-of-adjustment", "youngtown-boa", "Board"),
+            ("Youngtown PSPRS Local Board", "psprs-local-board", "youngtown-psprs", "Board"),
+        ]
+        for name, slug, body_code, body_type in youngtown_bodies:
+            if session.execute(select(PublicBody).where(PublicBody.body_code == body_code)).scalar_one_or_none() is None:
+                session.add(PublicBody(jurisdiction_id=youngtown.id, name=name, slug=slug,
+                                       body_code=body_code, body_type=body_type,
+                                       website_url="https://www.youngtownaz.org/departments/town_clerk/agendas_minutes.php"))
+
+        # ── Cities of Flagstaff and Yuma ──
+        flagstaff = session.execute(select(Jurisdiction).where(Jurisdiction.slug == "flagstaff")).scalar_one_or_none()
+        if flagstaff is None:
+            flagstaff = Jurisdiction(name="City of Flagstaff", slug="flagstaff", state="AZ")
+            session.add(flagstaff); session.flush()
+        flagstaff_bodies = [
+            ("City Council", "city-council", "flagstaff-cc", "Council"),
+            ("Airport Commission", "airport-commission", "flagstaff-airport", "Commission"),
+            ("Beautification and Public Art Commission", "beautification-public-art", "flagstaff-bpac", "Commission"),
+            ("Bicycle Advisory Committee", "bicycle-advisory", "flagstaff-bac", "Committee"),
+            ("Board of Adjustment", "board-of-adjustment", "flagstaff-boa", "Board"),
+            ("Building and Fire Code of Appeals", "building-fire-code-appeals", "flagstaff-bfca", "Board"),
+            ("Commission on Diversity Awareness", "diversity-awareness", "flagstaff-coda", "Commission"),
+            ("Commission on Inclusion and Adaptive Living", "inclusion-adaptive-living", "flagstaff-cial", "Commission"),
+            ("Flagstaff Housing Authority", "housing-authority", "flagstaff-fha", "Authority"),
+            ("Heritage Preservation Commission", "heritage-preservation", "flagstaff-hpc", "Commission"),
+            ("Housing Commission", "housing-commission", "flagstaff-hc", "Commission"),
+            ("Indigenous Commission", "indigenous-commission", "flagstaff-ic", "Commission"),
+            ("Joint Parks and Recreation/Open Space", "joint-parks-open-space", "flagstaff-jpro", "Commission"),
+            ("Library Board", "library-board", "flagstaff-library", "Board"),
+            ("Open Spaces Commission", "open-spaces", "flagstaff-osc", "Commission"),
+            ("PSPRS Local Board", "psprs-local-board", "flagstaff-psprs", "Board"),
+            ("Parks and Recreation Commission", "parks-recreation", "flagstaff-pr", "Commission"),
+            ("Pedestrian Advisory Committee", "pedestrian-advisory", "flagstaff-pac", "Committee"),
+            ("Planning and Zoning Commission", "planning-zoning", "flagstaff-pz", "Commission"),
+            ("Sustainability Commission", "sustainability", "flagstaff-sc", "Commission"),
+            ("Tourism Commission", "tourism", "flagstaff-tourism", "Commission"),
+            ("Water Commission", "water", "flagstaff-water", "Commission"),
+            ("General Public Meetings", "general", "flagstaff-general", "Other"),
+        ]
+        for name, slug, body_code, body_type in flagstaff_bodies:
+            if session.execute(select(PublicBody).where(PublicBody.body_code == body_code)).scalar_one_or_none() is None:
+                session.add(PublicBody(jurisdiction_id=flagstaff.id, name=f"Flagstaff {name}", slug=slug,
+                                       body_code=body_code, body_type=body_type,
+                                       website_url="https://public.destinyhosted.com/35247/agenda/"))
+
+        yuma = session.execute(select(Jurisdiction).where(Jurisdiction.slug == "yuma")).scalar_one_or_none()
+        if yuma is None:
+            yuma = Jurisdiction(name="City of Yuma", slug="yuma", state="AZ")
+            session.add(yuma); session.flush()
+        if session.execute(select(PublicBody).where(PublicBody.body_code == "yuma-cc")).scalar_one_or_none() is None:
+            session.add(PublicBody(jurisdiction_id=yuma.id, name="Yuma City Council", slug="city-council",
+                                   body_code="yuma-cc", body_type="Council",
+                                   website_url="https://yuma-az.legistar.com/Calendar.aspx"))
+
         session.commit()
     finally:
         session.close()
@@ -1579,5 +1679,3 @@ def _normalize_existing_meeting_dates(engine: Optional[Engine] = None) -> None:
         return fixed + fixed2
     finally:
         session.close()
-
-

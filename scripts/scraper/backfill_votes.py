@@ -761,6 +761,7 @@ def _persist_minutes_votes(
                     session.flush()
                     person_map[sv_norm] = p.id
             sv_rec = MemberVote(
+                body=body,
                 agenda_item_vote_id=aiv.id,
                 member_id=person_map.get(sv_norm, 0),
                 vote=sv.get("vote", "yes"),

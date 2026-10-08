@@ -119,7 +119,7 @@
       <div class="d-flex justify-content-between">
         <div>
           <h6 class="mb-1"><a href="/meetings/{{ item.body }}/{{ item.meeting_id }}" class="text-decoration-none">{{ item.title }}</a></h6>
-          <p class="mb-0 small text-muted">{% if item.highlight %}{{ item.highlight|safe }}{% else %}{{ item.text }}{% endif %}</p>
+          <p class="mb-0 small text-muted">{% if item.highlight %}{{ item.highlight|safe_search_highlight }}{% else %}{{ item.text }}{% endif %}</p>
           <small class="text-muted">
             {{ item.meeting_date or "—" }} ·
             {{ item.body | replace("_"," ") | replace("-"," ") | title }}
@@ -150,7 +150,7 @@
       <div class="d-flex justify-content-between">
         <div>
           <h6 class="mb-1"><a href="/documents/{{ doc.id }}" class="text-decoration-none">{{ doc.document_title }}</a></h6>
-          <p class="mb-0 small text-muted">{% if doc.highlight %}{{ doc.highlight|safe }}{% else %}{{ doc.text_snippet }}{% endif %}</p>
+          <p class="mb-0 small text-muted">{% if doc.highlight %}{{ doc.highlight|safe_search_highlight }}{% else %}{{ doc.text_snippet }}{% endif %}</p>
           <small class="text-muted">
             {{ doc.meeting_date or "—" }}
             {% if doc.jurisdiction_name %} · {{ doc.jurisdiction_name }}{% endif %}

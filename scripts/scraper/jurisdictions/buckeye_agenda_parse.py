@@ -16,7 +16,7 @@ import re
 
 from scraper.platforms import granicus_agenda_blocks as blocks
 
-__all__ = ["parse_agenda_blocks", "parse_agenda_pdf_items"]
+__all__ = ["parse_agenda_pdf_items"]
 
 def _is_pdf_packet_noise(text: str) -> bool:
     """Return True if *text* looks like supporting-document noise, not a real

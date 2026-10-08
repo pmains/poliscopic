@@ -271,6 +271,15 @@ environment. Never restore over production.
 database state.** Capture the restore target, the restored object counts, and the
 result. An unverified backup is not a backup for this purpose.
 
+**Retries resume from the earliest unverified phase; they do not restart the dump.**
+Once a dump is complete, nonzero, mode 0600, hash-bound to its baseline and copied
+off-volume with matching bytes/hash, treat it as an immutable reusable input. A
+failure in scratch creation, restore, comparison, or teardown must be retried against
+that same archive after re-validating every binding. Do **not** run `pg_dump` again
+unless the dump itself is missing, incomplete, altered, or bound to the wrong target,
+proposal, preflight, or snapshot. Each retry uses a fresh scratch name and its own
+write-once attempt receipt; it never overwrites the source artifacts.
+
 > **Same-volume hardlinks are NOT protection.** A hardlink protects the bytes against
 > cleanup of the original directory entry; it does **not** protect against loss of the
 > volume, filesystem corruption, or deletion of the volume. The local retention hold
@@ -287,6 +296,12 @@ result. An unverified backup is not a backup for this purpose.
 #   <backup tool for the tier>            (see docs/ops/OPS.md for the tool)
 shasum -a 256 <backup-path>
 # scratch-restore validation into a throwaway database
+
+# after a verify-phase failure, resume the completed archive (no new pg_dump)
+python scripts/ops/production_retirement_backup.py \
+  --proposal <proposal> --preflight <preflight> \
+  --resume-from <SOURCE_UTC_TAG> \
+  --expect-dump-bytes <BYTES> --expect-dump-sha256 <SHA256>
 ```
 
 **Expected result:** Backup file is **nonzero** and has a recorded SHA-256; its

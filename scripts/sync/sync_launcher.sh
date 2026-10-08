@@ -35,6 +35,16 @@ if [ -f "$COMPLETE_MARKER" ]; then
     exit 0
 fi
 
+# The historical launcher expected a separate checker to create .complete, but
+# that marker is not written by sync_log.sh.  Use the authoritative artifact
+# checker as the primary idempotency gate so a scheduler retry cannot launch a
+# second scrape after today's real summary/log already prove completion.
+if [ -x "$SCRIPT_DIR/sync_completion_check.sh" ] && \
+   "$SCRIPT_DIR/sync_completion_check.sh" "$DATE_STAMP" >/dev/null 2>&1; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Sync for $DATE_STAMP already verified complete. Exiting."
+    exit 0
+fi
+
 if [ -f "$PID_FILE" ]; then
     EXISTING_PID=$(cat "$PID_FILE")
     if kill -0 "$EXISTING_PID" 2>/dev/null; then

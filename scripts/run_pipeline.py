@@ -29,6 +29,8 @@ import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 
+from scraper.source_registry import source_by_command
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
@@ -96,6 +98,10 @@ def _build_tiers(days_back: int, days_forward: int, weekly_days_back: int
         daily_args("el-mirage", "--sync"),
         daily_args("paradise-valley", "--sync"),
         daily_args("fountain-hills", "--sync"),
+        daily_args("litchfield-park", "--sync"),
+        daily_args("youngtown", "--sync"),
+        daily_args("flagstaff", "--sync"),
+        daily_args("yuma", "--sync"),
         daily_args("queen-creek", "--sync"),
         daily_args("apache-junction", "--sync"),
         daily_args("tolleson", "--sync"),
@@ -135,6 +141,10 @@ def _build_tiers(days_back: int, days_forward: int, weekly_days_back: int
         weekly_args("el-mirage", "--sync"),
         weekly_args("paradise-valley", "--sync"),
         weekly_args("fountain-hills", "--sync"),
+        weekly_args("litchfield-park", "--sync"),
+        weekly_args("youngtown", "--sync"),
+        weekly_args("flagstaff", "--sync"),
+        weekly_args("yuma", "--sync"),
         weekly_args("queen-creek", "--sync"),
         weekly_args("apache-junction", "--sync"),
         weekly_args("buckeye-granicus", "--sync"),
@@ -148,7 +158,15 @@ def run_sync(args: list[str], label: str) -> tuple[int, str]:
     """Run a single agenda_scraper sync and return (exit_code, summary_line).
     Runs inside a worker process when called from ProcessPoolExecutor.
     """
-    cmd = [sys.executable, "scripts/scrape_agendas.py"] + args
+    # The scheduler label is not always the CLI command.  In particular,
+    # ``buckeye-granicus`` is the scheduler/source identity while the existing
+    # scraper handler is named ``buckeye``.  Passing the label through made the
+    # generic AgendaOnline fallback scrape Maricopa County and persist it under
+    # the bogus body code ``buckeye-granicus``.  Resolve aliases at the process
+    # boundary, just as the newer sync runner does.
+    source = source_by_command(args[0])
+    invocation_args = [source.invocation_command, *args[1:]]
+    cmd = [sys.executable, "scripts/scrape_agendas.py"] + invocation_args
     start = time.time()
     log.info("  [Worker %s] Starting %s", os.getpid(), label)
     try:

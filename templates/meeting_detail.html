@@ -357,8 +357,8 @@
                 {# Full agenda item text #}
                 {% if item.agenda_item_text %}
                 <h6>Item text</h6>
-                <div class="small" style="max-height:12em; overflow-y:auto;">
-                    {{ item.agenda_item_text|replace('\n', '<br>')|safe }}
+                <div class="small" style="max-height:12em; overflow-y:auto; white-space:pre-line;">
+                    {{ item.agenda_item_text }}
                 </div>
                 <hr class="my-2">
                 {% endif %}

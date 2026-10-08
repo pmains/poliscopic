@@ -19,6 +19,7 @@ from scraper.source_registry import (
 )
 from scraper.jurisdiction_registry import authority_by_slug
 from sync import runner
+import run_pipeline
 
 
 def test_scheduled_commands_are_unique_and_cover_compatibility_groups():
@@ -145,6 +146,28 @@ def test_buckeye_granicus_uses_the_existing_buckeye_cli_handler():
     assert command[2:4] == ["buckeye", "--sync"]
     parsed = parse_args(command[2:])
     assert parsed.source == "buckeye"
+
+
+def test_legacy_pipeline_resolves_scheduler_label_before_subprocess(monkeypatch):
+    captured = {}
+
+    class Result:
+        returncode = 0
+        stdout = "Synced 0 Buckeye (Granicus) meetings\n"
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return Result()
+
+    monkeypatch.setattr(run_pipeline.subprocess, "run", fake_run)
+    code, _ = run_pipeline.run_sync(
+        ["buckeye-granicus", "--start-date=2026-10-01", "--sync"],
+        "buckeye-granicus",
+    )
+
+    assert code == 0
+    assert captured["command"][2] == "buckeye"
+    assert "buckeye-granicus" not in captured["command"]
 
 
 def test_unknown_source_is_refused():

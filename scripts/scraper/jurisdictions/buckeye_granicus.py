@@ -23,7 +23,6 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from scraper.jurisdictions.buckeye_agenda_parse import (
-    parse_agenda_blocks,
     parse_agenda_pdf_items,
 )
 

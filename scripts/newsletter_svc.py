@@ -30,7 +30,7 @@ from typing import Iterable, List, Optional
 from sqlalchemy import select, delete, func
 from sqlalchemy.orm import Session
 
-from db.core import get_engine, get_session
+from db.core import get_engine
 from db.newsroom import (NewsletterSubscriber, NewsletterSubscription,
                          NewsletterSubmitLog)
 
@@ -209,7 +209,7 @@ def _set_topic_rows(session: Session, sub: NewsletterSubscriber,
     for topic in wanted:
         row = existing.get(topic)
         if row is None:
-            session.add(NewsletterSubscription(
+            sub.subscriptions.append(NewsletterSubscription(
                 subscriber_id=sub.id, topic=topic,
                 status="active" if activate else "pending",
                 created_at=now, updated_at=now))
@@ -226,7 +226,12 @@ def _set_topic_rows(session: Session, sub: NewsletterSubscriber,
 
 
 def confirm_subscriber_by_email(session: Session, email: str) -> Optional[NewsletterSubscriber]:
-    """Activate a pending subscriber + pending topics.  None if not pending."""
+    """Stage activation of a pending subscriber and its pending topics.
+
+    The caller owns the transaction so this transition can be composed with
+    related work and rolled back atomically.  Returns ``None`` when the email
+    does not identify a pending subscriber.
+    """
     sub = get_by_email(session, email)
     if sub is None or sub.status != "pending":
         return None
@@ -239,13 +244,13 @@ def confirm_subscriber_by_email(session: Session, email: str) -> Optional[Newsle
         if row.status == "pending":
             row.status = "active"
             row.updated_at = now
-    session.commit()
+    session.flush()
     return sub
 
 
 def set_topics_by_email(session: Session, email: str,
                         topics: Iterable[str]) -> Optional[NewsletterSubscriber]:
-    """Manage page: replace the active-topic set for an active subscriber."""
+    """Stage replacement of an active subscriber's topic set."""
     sub = get_by_email(session, email)
     if sub is None or sub.status != "active":
         return None
@@ -255,7 +260,7 @@ def set_topics_by_email(session: Session, email: str,
     for topic in wanted:
         row = existing.get(topic)
         if row is None:
-            session.add(NewsletterSubscription(
+            sub.subscriptions.append(NewsletterSubscription(
                 subscriber_id=sub.id, topic=topic, status="active",
                 created_at=now, updated_at=now))
         elif row.status != "active":
@@ -266,13 +271,13 @@ def set_topics_by_email(session: Session, email: str,
             row.status = "unsubscribed"
             row.updated_at = now
     sub.updated_at = now
-    session.commit()
+    session.flush()
     return sub
 
 
 def unsubscribe_by_email(session: Session, email: str,
                          topic: Optional[str] = None) -> Optional[NewsletterSubscriber]:
-    """Unsubscribe one topic (or all when topic is None).  Idempotent."""
+    """Stage one-topic or full unsubscription.  Idempotent."""
     sub = get_by_email(session, email)
     if sub is None:
         return None
@@ -290,7 +295,7 @@ def unsubscribe_by_email(session: Session, email: str,
                 row.status = "unsubscribed"
                 row.updated_at = now
     sub.updated_at = now
-    session.commit()
+    session.flush()
     return sub
 
 
@@ -356,11 +361,12 @@ def _prune_log(session: Session) -> None:
 
 def log_submit(session: Session, email: str, ip: Optional[str],
                kind: str = "subscribe", note: str = "") -> None:
+    """Stage an abuse-audit entry; the caller owns the transaction."""
     _prune_log(session)
     session.add(NewsletterSubmitLog(
         email=normalize_email(email), ip=ip, kind=kind, note=note,
         created_at=datetime.now(timezone.utc)))
-    session.commit()
+    session.flush()
 
 
 def rate_limited(session: Session, email: str, ip: Optional[str],

@@ -822,7 +822,8 @@ def main() -> int:
                 "(the reviewed plan must be proven, not invented)")
         return mode_scratch_prove(args.dump, args.baseline, args.plan_artifact,
                                   args.digest)
-    require_production_interlock("OP-REPAIR", "scripts/body_code_merge_prod.py")
+    require_production_interlock("OP-REPAIR", "scripts/body_code_merge_prod.py",
+                                 mode="repair")
     if not args.digest or not args.backup_receipt or not args.plan_artifact:
         parser.error(
             "--apply requires --digest, --backup-receipt and --plan-artifact")

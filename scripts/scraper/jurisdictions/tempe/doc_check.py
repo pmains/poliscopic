@@ -412,7 +412,7 @@ def _resync_meeting(body_code: str, meeting_id: str,
                     base_url=TEMPE_CONFIG.base_url,
                 )
                 for doc in item_docs:
-                    doc["agenda_item_id"] = 0
+                    doc["agenda_item_id"] = item.get("agenda_item_id", "0")
                 supp_docs.extend(item_docs)
 
         meeting_dict = {

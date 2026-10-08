@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
+import ssl
 import urllib.parse
 from typing import Optional
 
@@ -22,6 +23,7 @@ SOURCE_INSTANCE_URL = "https://public.destinyhosted.com"
 
 BASE_URL = "https://public.destinyhosted.com"
 GOODYEAR_ID = "46639"
+AGENDA_BASE_URL = f"{BASE_URL}/{GOODYEAR_ID}/agenda/"
 
 # BODY_MAP: meeting name keyword → (slug, body_code)
 BODY_MAP: dict[str, tuple[str, str]] = {
@@ -145,11 +147,19 @@ def search_goodyear_meetings(year: int, body_slugs: Optional[list[str]] = None) 
     seen_seqs: set[str] = set()
 
     for month in range(1, 13):
-        url = f"{BASE_URL}/agenda_publish.cfm?id={GOODYEAR_ID}&get_month={month}&get_year={year}"
+        # AgendaQuick's 2026 UI moved from agenda_publish.cfm to monthly
+        # ``default.cfm`` cards.  The old endpoint silently returns an
+        # unrelated page, which made the scraper report zero meetings.
+        url = f"{AGENDA_BASE_URL}default.cfm?mt=ALL&month={month}&year={year}"
         try:
             req = urllib.request.Request(url, headers=HEADERS)
             time.sleep(0.5)
-            with urllib.request.urlopen(req, timeout=20) as resp:
+            try:
+                import certifi
+                tls_context = ssl.create_default_context(cafile=certifi.where())
+            except ImportError:
+                tls_context = ssl.create_default_context()
+            with urllib.request.urlopen(req, timeout=20, context=tls_context) as resp:
                 html = resp.read().decode("utf-8", errors="replace")
         except Exception as e:
             log.warning(f"Failed to fetch Goodyear {year}-{month:02d}: {e}")
@@ -171,6 +181,46 @@ def search_goodyear_meetings(year: int, body_slugs: Optional[list[str]] = None) 
 def _parse_month_page(html: str, year: int, month: int) -> list[dict]:
     """Parse a single month's AgendaQuick view into meeting dicts."""
     import re as _re
+
+    # Current AgendaQuick markup uses one bordered card per meeting instead of
+    # the legacy table/agenda_publish layout.
+    if 'class="p-2 border-top"' in html and 'minutes.cfm?meetingId=' in html:
+        meetings = []
+        blocks = _re.split(r'<div class="p-2 border-top">', html)[1:]
+        for block in blocks:
+            heading = _re.search(r'<h3[^>]*>(.*?)</h3>', block, _re.I | _re.S)
+            agenda = _re.search(r'href="([^"]*agenda\.cfm\?seq=(\d+)[^"]*)"', block, _re.I)
+            if not heading or not agenda:
+                continue
+            heading_text = html_mod.unescape(_re.sub(r'<[^>]+>', '', heading.group(1))).strip()
+            parsed = _re.match(r'([A-Za-z]+\s+\d{1,2},\s*\d{4}):\s*(.+)', heading_text)
+            if not parsed:
+                continue
+            meeting_date = _normalize_text_date(parsed.group(1)) or ""
+            title = parsed.group(2).strip()
+            slug, code = _resolve_body(title)
+            if title.lower().startswith(('cancelled ', 'canceled ')):
+                meeting_type = "Cancelled"
+                canceled = True
+            else:
+                meeting_type = extract_meeting_type(title)
+                canceled = False
+            minutes = _re.search(r'href="([^"]*minutes\.cfm\?meetingId=\d+[^"]*)"', block, _re.I)
+            video = _re.search(r'href="([^"]*open\.media[^"]*)"', block, _re.I)
+            meetings.append({
+                "meeting_id": agenda.group(2),
+                "meeting_date": meeting_date,
+                "meeting_type": meeting_type,
+                "meeting_title": title,
+                "body_name": title,
+                "body_slug": slug,
+                "body_code": code,
+                "agenda_url": urllib.parse.urljoin(AGENDA_BASE_URL, html_mod.unescape(agenda.group(1))),
+                "minutes_url": urllib.parse.urljoin(AGENDA_BASE_URL, html_mod.unescape(minutes.group(1))) if minutes else "",
+                "video_url": html_mod.unescape(video.group(1)) if video else "",
+                "canceled": canceled,
+            })
+        return meetings
 
     meetings: list[dict] = []
     current_date = ""
@@ -318,7 +368,12 @@ def fetch_page(url: str, timeout: int = 20) -> str:
     import urllib.request
     req = urllib.request.Request(url, headers=HEADERS)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        try:
+            import certifi
+            tls_context = ssl.create_default_context(cafile=certifi.where())
+        except ImportError:
+            tls_context = ssl.create_default_context()
+        with urllib.request.urlopen(req, timeout=timeout, context=tls_context) as resp:
             return resp.read().decode("utf-8", errors="replace")
     except Exception as e:
         log.warning("Failed to fetch %s: %s", url, e)

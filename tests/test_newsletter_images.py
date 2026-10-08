@@ -74,15 +74,25 @@ def test_transportation_rotates_on_generic_text():
 
 
 def test_water_preferred_is_colorado_river():
-    # Pete preference: colorado-river-flickr is the preferred water image.
-    # Week 37 idx0 = colorado-river.
+    # Pete preference: colorado-river-flickr is the preferred water image, and
+    # stays FIRST in the pool. The week mapping is pool-length-aware (idx =
+    # (week-1) % len(pool)) so it survives redundant photos being added.
+    pool = _paths("water-environment")
+    assert pool[0] == "/static/uploads/colorado-river-flickr.jpg"
     assert pick_featured_image("water-environment", "unrelated agenda item", W37) == \
-        "/static/uploads/colorado-river-flickr.jpg"
+        pool[(37 - 1) % len(pool)]
 
 
 def test_water_rotates_to_faucet_in_alternate_week():
-    assert pick_featured_image("water-environment", "unrelated agenda item", W38) == \
-        "/static/uploads/scottsdale-water-faucet.jpg"
+    # The faucet image remains the second entry and is still reached by the
+    # rotation; consecutive weeks advance through the pool, never the same one.
+    pool = _paths("water-environment")
+    assert pool[1] == "/static/uploads/scottsdale-water-faucet.jpg"
+    first = pick_featured_image("water-environment", "unrelated agenda item", W37)
+    second = pick_featured_image("water-environment", "unrelated agenda item", W38)
+    assert first == pool[(37 - 1) % len(pool)]
+    assert second == pool[(38 - 1) % len(pool)]
+    assert first != second
 
 
 def test_water_river_text_pins_colorado_river():
@@ -154,10 +164,12 @@ class _Tag:
 
 
 def test_card_fallback_maps_topic_tags_and_rotates():
-    # Week 37 → idx0 (preferred); week 38 → idx1 (redundant image).
+    # Water pool gained six redundant photos (Pete directive 2026-09-24), so the
+    # assertion follows the pool-length-aware rotation rather than fixed indices.
     pool = CARD_FALLBACK_POOLS["water"]
-    assert card_fallback_image([_Tag("Water")], W37) == pool[0]
-    assert card_fallback_image([_Tag("Water")], W38) == pool[1]
+    assert card_fallback_image([_Tag("Water")], W37) == pool[(37 - 1) % len(pool)]
+    assert card_fallback_image([_Tag("Water")], W38) == pool[(38 - 1) % len(pool)]
+    assert len(pool) >= 2 and pool[0] != pool[1]
 
 
 def test_card_fallback_accepts_plain_strings():

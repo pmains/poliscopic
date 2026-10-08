@@ -867,7 +867,12 @@ def fetch_item_details_batch(
                 # Convert DownloadFile URLs to ViewDocument URLs
                 # (DownloadFile requires JavaScript; ViewDocument serves directly)
                 for doc in item_docs:
-                    doc["agenda_item_id"] = "0"
+                    # Preserve the exact parent item identity.  Nested Tempe
+                    # items can share/omit display numbers, so treating every
+                    # attachment as agenda_item_id="0" loses the only
+                    # deterministic item-to-document link and makes the UI
+                    # render all attachments at meeting level.
+                    doc["agenda_item_id"] = item.get("agenda_item_id", "0")
                     url = doc.get("document_url", "")
                     if "DownloadFile" in url or "Downloadfile" in url:
                         resolved = resolve_downloadfile_to_viewdocument(url, config.base_url)

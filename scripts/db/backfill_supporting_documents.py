@@ -130,6 +130,7 @@ def main() -> int:
     require_production_interlock(
         "OP-STATUS" if args.dry_run else "OP-RECON",
         "scripts/db/backfill_supporting_documents.py",
+        mode=None if args.dry_run else "backfill",
     )
 
     dev_url = os.environ.get("DATABASE_URL")

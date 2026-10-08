@@ -622,5 +622,39 @@ class TestSupportingDocumentBackfill(unittest.TestCase):
         s.close()
 
 
+class TestItemDetailDocumentLinkage(unittest.TestCase):
+    """OnBase attachments retain the exact agenda item source key."""
+
+    def test_batch_preserves_parent_agenda_item_id(self):
+        from unittest.mock import patch
+        from scraper.platforms.onbase import TEMPE_CONFIG, fetch_item_details_batch
+
+        detail_html = """
+        <div class="agenda-item-description">Item details with enough text for parsing.</div>
+        <a href="/Agendaonline/Documents/DownloadFile/minutes.pdf?documentType=1&amp;meetingId=1964&amp;itemId=15823&amp;publishId=22853&amp;isSection=False&amp;isAttachment=True">
+          082526_STUDYSESSIONMINUTES.PDF
+        </a>
+        """
+        items = [{
+            "body": "tempe-cc",
+            "agenda_item_id": "1964-4B2",
+            "agenda_item_number": "4B2",
+            "onbase_item_id": 15823,
+        }]
+
+        with patch(
+            "scraper.platforms.onbase.fetch_item_details_sync",
+            return_value=detail_html,
+        ), patch(
+            "scraper.platforms.onbase.resolve_downloadfile_to_viewdocument",
+            return_value=None,
+        ):
+            docs = fetch_item_details_batch(TEMPE_CONFIG, 1964, items, max_workers=1)
+
+        self.assertEqual(len(docs), 1)
+        self.assertEqual(docs[0]["agenda_item_id"], "1964-4B2")
+        self.assertEqual(docs[0]["agenda_item_number"], "4B2")
+
+
 if __name__ == "__main__":
     unittest.main()
