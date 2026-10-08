@@ -150,13 +150,13 @@ input and must be escaped before any trusted highlighting markup is introduced.
 Browser mutations use CSRF protection; machine/custom-token endpoints are
 classified explicitly rather than globally exempted by accident.
 
-## Editorial and newsletter system
+## Editorial workflows
 
-Article routes and the newsletter service manage publication, subscriptions,
-confirmation, delivery, and image selection. Production editorial writes use a
-guarded operation with their own authorization and terminal state. A successful
-email send is not proof that an article was published, and a successful publish
-is not proof that a data scrape completed.
+Workflow definitions under `workflows/` drive classification, enrichment,
+summarization, verification, publication, and sending. Publication to the
+production editorial database is a guarded operation with its own authorization
+and terminal state. A successful email send is not proof that an article was
+published, and a successful publish is not proof that a data scrape completed.
 
 ## Scheduling and production synchronization
 

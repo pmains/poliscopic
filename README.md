@@ -4,7 +4,8 @@ Poliscopic is a public-meeting ingestion, search, and civic-intelligence
 platform for Arizona. It collects meetings, agenda items, minutes, votes, and
 supporting documents from independent municipal, county, and regional
 governments; extracts searchable text and layout-aware OCR evidence; and serves
-the resulting record through a Flask website and newsletter system.
+the resulting record through a Flask website and an editorial/newsletter
+workflow.
 
 Tempe, Maricopa County, MAG, and the other covered governments are modeled as
 peer jurisdictions. Geographic containment does not imply that a city reports
@@ -20,7 +21,8 @@ to a county.
   evidence and uses Tesseract for scanned pages.
 - A Flask application for meetings, calendars, public bodies, members, search,
   articles, topics, and newsletters.
-- Daily scrape, validation, and guarded development-to-production upsert tools.
+- Daily scrape, validation, guarded development-to-production upsert, and
+  editorial workflow tooling.
 
 Historical permit tables remain in the database for compatibility, but permits
 are not a current product surface or ingestion workflow.
@@ -38,6 +40,7 @@ scripts/docs/             Document acquisition, extraction, and layout evidence
 scripts/entities/         Entity and event extraction
 scripts/sync/             Daily scraping, verification, and production-upsert
                           orchestration
+workflows/                Newsletter/editorial workflow definitions and runner
 templates/, static/       Web presentation assets
 tests/                    Unit, integration, safety, and operations tests
 briefs/                   Durable production-operation contracts and records
@@ -169,7 +172,7 @@ under `scripts/scraper/platforms/`; shared source metadata belongs in
 
 ```bash
 uv run pytest
-uv run ruff check src routes scripts tests
+uv run ruff check src routes scripts tests workflows
 ```
 
 Tests default to an isolated temporary SQLite database. Tests that exercise
@@ -184,7 +187,8 @@ Development scraping and production synchronization are distinct lanes:
 2. The production upsert lane checks same-day lineage, entity quality,
    authorization, a restore-verified backup, meeting parity, and public HTTP
    health before recording a successful terminal receipt.
-3. Newsletter publication and delivery have their own guarded operating state.
+3. Editorial workflows create, verify, publish, and send newsletters under
+   their own authorization contract.
 
 Production mutation is never implied by a code change or a successful scrape.
 Before any production operation, read and follow
