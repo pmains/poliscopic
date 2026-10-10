@@ -227,8 +227,9 @@ def prune_unverified_attempts(*, backup_dir: Path = DEFAULT_BACKUP_DIR,
                               now: float | None = None) -> list[str]:
     """Remove stale partial generations that never produced a valid receipt.
 
-    An in-progress dump is protected by the age threshold.  A generation with a
-    valid receipt is always preserved and remains governed by ``prune_verified``.
+    An in-progress dump is protected by the age threshold. Any generation with
+    a receipt is preserved for ``prune_verified`` or incident investigation;
+    this cleanup touches only abandoned baseline/dump pairs with no receipt.
     """
     now = time.time() if now is None else now
     removed: list[str] = []
@@ -242,7 +243,7 @@ def prune_unverified_attempts(*, backup_dir: Path = DEFAULT_BACKUP_DIR,
         baseline = backup_dir / f"{stem}.baseline.json"
         dump = backup_dir / f"{stem}.dump"
         receipt = backup_dir / f"{stem}.receipt.json"
-        if receipt.exists() and verified_generation(receipt, backup_dir=backup_dir):
+        if receipt.exists():
             continue
         existing = [path for path in (baseline, dump, receipt) if path.exists()]
         if not existing or any(now - path.stat().st_mtime < older_than_seconds
