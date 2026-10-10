@@ -1,9 +1,22 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from scripts.ops import reuse_daily_sync_evidence as reuse
+
+
+def test_direct_execution_can_import_repository_packages(tmp_path):
+    environment = dict(os.environ)
+    environment.pop("PYTHONPATH", None)
+    result = subprocess.run(
+        [sys.executable, str(Path(reuse.__file__).resolve()), "--help"],
+        cwd=tmp_path, env=environment, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "[config]" not in result.stdout
 
 
 def _receipt(root: Path, name: str, *, run_date: str = "2026-10-09") -> Path:

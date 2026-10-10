@@ -5,10 +5,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 
-from scripts.ops import daily_sync_backup as backup
-from scripts.ops import daily_sync_gate as gate
+REPO = Path(__file__).resolve().parents[2]
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+
+with redirect_stdout(sys.stderr):
+    from scripts.ops import daily_sync_backup as backup
+    from scripts.ops import daily_sync_gate as gate
 
 
 def find_reusable(*, run_date: str, attempt_id: str, authorization_id: str,
