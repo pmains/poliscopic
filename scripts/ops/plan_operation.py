@@ -115,6 +115,7 @@ def cmd_authorize(args: argparse.Namespace) -> int:
             authorized_at=datetime.now(timezone.utc),
             mode=args.mode,
             max_uses=args.max_uses,
+            use_accounting=args.use_accounting,
             verbatim_source={
                 "file": str(verbatim_path),
                 "sha256": hashlib.sha256(verbatim.encode("utf-8")).hexdigest(),
@@ -129,6 +130,7 @@ def cmd_authorize(args: argparse.Namespace) -> int:
     print(f"authorization recorded: {path}")
     print(f"  mode:        {args.mode}")
     print(f"  max_uses:    {args.max_uses}")
+    print(f"  accounting:  {args.use_accounting}")
     print(f"  author:      {args.author}")
     print(f"  plan_digest: {plan['digest']}")
     return 0
@@ -207,6 +209,13 @@ def main(argv: list[str] | None = None) -> int:
     p_auth.add_argument("--author", required=True)
     p_auth.add_argument("--mode", choices=("single-use", "standing"), default="single-use")
     p_auth.add_argument("--max-uses", type=int, default=1)
+    p_auth.add_argument(
+        "--use-accounting",
+        choices=("allowance", "successful-terminal"),
+        default="allowance",
+        help="how uses are consumed; successful-terminal counts only a completed, "
+             "verified terminal receipt",
+    )
     p_auth.set_defaults(func=cmd_authorize)
 
     p_show = sub.add_parser("show", help="show plan/authorization state")

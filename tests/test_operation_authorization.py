@@ -626,7 +626,6 @@ def test_cli_plan_then_authorize_then_validate(sandbox, tmp_path):
         capture_output=True, text=True, env=env, cwd=str(PROJECT_ROOT),
     )
     assert record.returncode == 0, record.stderr
-
     check = subprocess.run(
         [sys.executable, cli, "validate", "--operation", OP,
          "--entry-point", REAL_CODE, "--scope", "tags,articles",
@@ -644,6 +643,36 @@ def test_cli_plan_then_authorize_then_validate(sandbox, tmp_path):
     )
     assert omitted.returncode == 3
     assert "MODE_MISSING" in omitted.stdout
+
+
+def test_cli_authorize_records_requested_use_accounting(sandbox, tmp_path):
+    env = {
+        "POLISCOPIC_RELEASE_DIR": str(tmp_path / "release"),
+        "POLISCOPIC_AUDIT_DIR": str(tmp_path / "audit"),
+        "PATH": "/usr/bin:/bin",
+    }
+    cli = str(OPS_DIR / "plan_operation.py")
+    build = subprocess.run(
+        [sys.executable, cli, "plan", "--operation", OP, "--operation-id", OID,
+         "--entry-point", REAL_CODE, "--scope", "tags,articles",
+         "--code-path", REAL_CODE, "--rollback-owner", "Pete", "--days", "30"],
+        capture_output=True, text=True, env=env, cwd=str(PROJECT_ROOT),
+    )
+    assert build.returncode == 0, build.stderr
+    approval = tmp_path / "approval.txt"
+    approval.write_text("I approve this operation.\n")
+    record = subprocess.run(
+        [sys.executable, cli, "authorize", "--operation", OP, "--operation-id", OID,
+         "--verbatim-file", str(approval), "--author", "Pete",
+         "--mode", "standing", "--max-uses", "5",
+         "--use-accounting", "successful-terminal"],
+        capture_output=True, text=True, env=env, cwd=str(PROJECT_ROOT),
+    )
+    assert record.returncode == 0, record.stderr
+    authorization = json.loads(
+        (tmp_path / "release" / f"{OP}-{OID}" / "authorization.json").read_text()
+    )
+    assert authorization["use_accounting"] == "successful-terminal"
 
 
 def test_cli_authorize_refuses_missing_verbatim_file(sandbox, tmp_path):
