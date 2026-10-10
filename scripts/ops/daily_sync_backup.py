@@ -23,6 +23,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -221,6 +222,38 @@ def prune_verified(*, backup_dir: Path = DEFAULT_BACKUP_DIR,
     return removed
 
 
+def prune_unverified_attempts(*, backup_dir: Path = DEFAULT_BACKUP_DIR,
+                              older_than_seconds: int = 3600,
+                              now: float | None = None) -> list[str]:
+    """Remove stale partial generations that never produced a valid receipt.
+
+    An in-progress dump is protected by the age threshold.  A generation with a
+    valid receipt is always preserved and remains governed by ``prune_verified``.
+    """
+    now = time.time() if now is None else now
+    removed: list[str] = []
+    stems: set[str] = set()
+    for path in backup_dir.glob(f"{PREFIX}*.baseline.json"):
+        stems.add(path.name.removesuffix(".baseline.json"))
+    for path in backup_dir.glob(f"{PREFIX}*.dump"):
+        stems.add(path.name.removesuffix(".dump"))
+
+    for stem in sorted(stems):
+        baseline = backup_dir / f"{stem}.baseline.json"
+        dump = backup_dir / f"{stem}.dump"
+        receipt = backup_dir / f"{stem}.receipt.json"
+        if receipt.exists() and verified_generation(receipt, backup_dir=backup_dir):
+            continue
+        existing = [path for path in (baseline, dump, receipt) if path.exists()]
+        if not existing or any(now - path.stat().st_mtime < older_than_seconds
+                               for path in existing):
+            continue
+        for path in existing:
+            path.unlink()
+            removed.append(str(path))
+    return removed
+
+
 def create_backup(*, run_date: str, preflight_path: Path,
                   authorization_id: str,
                   backup_dir: Path = DEFAULT_BACKUP_DIR) -> dict[str, Any]:
@@ -240,6 +273,7 @@ def create_backup(*, run_date: str, preflight_path: Path,
 
     require_pg18()
     backup_dir.mkdir(parents=True, exist_ok=True)
+    prune_unverified_attempts(backup_dir=backup_dir)
     tag = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     stem = PREFIX + tag
     baseline_path = (backup_dir / f"{stem}.baseline.json").resolve()

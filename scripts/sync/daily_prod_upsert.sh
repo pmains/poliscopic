@@ -70,13 +70,24 @@ echo "$COMPLETION"
 # prune a known-good generation; successful attempts retain the newest five.
 ATTEMPT_ID="daily-${RUN_DATE}-$(date -u +%Y%m%dT%H%M%SZ)"
 PREFLIGHT="$SYNC_DIR/${ATTEMPT_ID}.preflight.json"
-"$PY" scripts/ops/production_preflight.py --output "$PREFLIGHT"
-"$PY" scripts/ops/daily_sync_backup.py \
-  --run-date "$RUN_DATE" \
-  --preflight "$PREFLIGHT" \
-  --authorization-id "$AUTHORIZATION_ID"
-BACKUP_RECEIPT="$(ls -t "$ROOT"/data/backups/daily-production/daily-production-*.receipt.json 2>/dev/null | head -1)"
-[ -n "$BACKUP_RECEIPT" ] || { echo "no verified daily backup receipt" >&2; exit 1; }
+REUSABLE=""
+if REUSABLE="$("$PY" scripts/ops/reuse_daily_sync_evidence.py \
+    --run-date "$RUN_DATE" \
+    --attempt-id "$ATTEMPT_ID" \
+    --authorization-id "$AUTHORIZATION_ID" \
+    --sync-dir "$SYNC_DIR")"; then
+  PREFLIGHT="${REUSABLE%%$'\t'*}"
+  BACKUP_RECEIPT="${REUSABLE#*$'\t'}"
+  echo "reusing fresh restore-verified backup: $BACKUP_RECEIPT"
+else
+  "$PY" scripts/ops/production_preflight.py --output "$PREFLIGHT"
+  "$PY" scripts/ops/daily_sync_backup.py \
+    --run-date "$RUN_DATE" \
+    --preflight "$PREFLIGHT" \
+    --authorization-id "$AUTHORIZATION_ID"
+  BACKUP_RECEIPT="$(ls -t "$ROOT"/data/backups/daily-production/daily-production-*.receipt.json 2>/dev/null | head -1)"
+  [ -n "$BACKUP_RECEIPT" ] || { echo "no verified daily backup receipt" >&2; exit 1; }
+fi
 
 # Upsert only. Never add --reconcile here: deletion propagation is a separate,
 # explicitly reviewed operation. The standing authorization and production

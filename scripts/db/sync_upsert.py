@@ -43,7 +43,6 @@ def _upsert_table(
     Otherwise only syncs rows where updated_at > last_sync_at.
     """
     pk_cols = _pk_cols(prod_engine, table)
-    pk_col = pk_cols[0] if pk_cols else "id"
     pk_sql = _quoted_cols(pk_cols)
     col_sql = _quoted_cols(cols)
 
@@ -107,13 +106,13 @@ def _upsert_table(
         select_sql = text(
             f'SELECT {col_sql} FROM public."{table}"\n'
             f'  WHERE updated_at > :since\n'
-            f'  ORDER BY "{pk_col}"\n'
+            f'  ORDER BY {pk_sql}\n'
             f'  LIMIT :limit OFFSET :offset'
         )
     else:
         select_sql = text(
             f'SELECT {col_sql} FROM public."{table}"\n'
-            f'  ORDER BY "{pk_col}"\n'
+            f'  ORDER BY {pk_sql}\n'
             f'  LIMIT :limit OFFSET :offset'
         )
 

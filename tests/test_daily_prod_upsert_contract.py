@@ -48,3 +48,12 @@ def test_restore_verified_backup_precedes_the_sync():
         "scripts/ops/daily_sync_backup.py") < text.index("scripts/db/sync_prod.py")
     assert "--backup-receipt \"$BACKUP_RECEIPT\"" in text
     assert "--attempt-id \"$ATTEMPT_ID\"" in text
+
+
+def test_retry_reuses_only_fresh_gate_validated_evidence():
+    text = SCRIPT.read_text()
+    reuse = text.index("reuse_daily_sync_evidence.py")
+    backup = text.index("scripts/ops/daily_sync_backup.py")
+    sync = text.index("scripts/db/sync_prod.py")
+    assert reuse < backup < sync
+    assert 'echo "reusing fresh restore-verified backup: $BACKUP_RECEIPT"' in text

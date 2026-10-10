@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 
 from scripts.ops import daily_sync_backup as backup
@@ -79,3 +80,23 @@ def test_retention_never_allows_zero_generations(tmp_path):
         assert "at least one" in str(exc)
     else:
         raise AssertionError("zero-retention policy was accepted")
+
+
+def test_stale_unverified_attempts_are_pruned_but_active_and_verified_are_kept(tmp_path):
+    stale_baseline = tmp_path / f"{backup.PREFIX}20261001T000000Z.baseline.json"
+    stale_dump = tmp_path / f"{backup.PREFIX}20261001T000000Z.dump"
+    stale_baseline.write_text("{}")
+    stale_dump.write_bytes(b"partial")
+    active_dump = tmp_path / f"{backup.PREFIX}20261002T000000Z.dump"
+    active_dump.write_bytes(b"active")
+    verified = _generation(tmp_path, 3)
+    now = time.time()
+    os.utime(stale_baseline, (now - 7200, now - 7200))
+    os.utime(stale_dump, (now - 7200, now - 7200))
+
+    removed = backup.prune_unverified_attempts(
+        backup_dir=tmp_path, older_than_seconds=3600, now=now)
+
+    assert set(removed) == {str(stale_baseline), str(stale_dump)}
+    assert active_dump.exists()
+    assert all(path.exists() for path in verified)
